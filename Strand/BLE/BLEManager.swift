@@ -1061,6 +1061,9 @@ public final class BLEManager: NSObject, ObservableObject {
 
     private var disSerial: String?
     private var disHwRev: String?
+    /// Personal build: DIS Model Number String (0x2A24), passed to `Whoop5Variant.from` the way Android does,
+    /// so an MG that reports "MG" is recognised even when its serial prefix is not the attested "5AM".
+    private var disModelNumber: String?
     /// #1635 follow-up: the DIS identity extras (firmware, manufacturer, model, software revision) as
     /// discovered. Held as a list rather than one property each because nothing branches on them
     /// individually — they are read as a set and reported as a set.
@@ -2165,6 +2168,11 @@ public final class BLEManager: NSObject, ObservableObject {
             log("Raw-accel capture: already in flight — ignoring")
             return
         }
+        // Personal build: acked writes on a live-HR-only 5/MG link trigger a refused pairing (see buzz).
+        if selectedModel.deviceFamily == .whoop5, !state.encryptedBond {
+            log("Raw-accel capture: this WHOOP 5/MG link is live-HR only (no encrypted bond) — pair the strap first.")
+            return
+        }
         rawCaptureInFlight = true
         let secs = RawCaptureWindow.clamp(seconds)
         collector?.beginRawCapture(seconds: secs)
@@ -2200,6 +2208,11 @@ public final class BLEManager: NSObject, ObservableObject {
     @discardableResult
     public func startGroundTruthRawCapture(sessionId: String) -> Bool {
         guard !rawCaptureInFlight else { return false }
+        // Personal build: needs the encrypted bond on a 5/MG (see captureRawAccel).
+        if selectedModel.deviceFamily == .whoop5, !state.encryptedBond {
+            log("Raw-data session: this WHOOP 5/MG link is live-HR only (no encrypted bond) — pair the strap first.")
+            return false
+        }
         rawCaptureInFlight = true
         send(.startRawData, payload: [0x01], writeType: .withResponse)
         send(.toggleIMUMode,
@@ -2326,6 +2339,12 @@ public final class BLEManager: NSObject, ObservableObject {
                 // user-started capture window is in flight; normal sync never enables this gate.
                 || (rawCaptureInFlight && (command == .startRawData
                     || command == .stopRawData || command == .toggleIMUMode))
+                // Personal build: the STOP direction is always admitted. `stopUnexpectedRealtimeImu` (the
+                // fail-safe for a producer left armed after a crash or a lost stop) runs precisely when no
+                // capture is in flight, so the clause above dropped both of its writes and the stream it
+                // exists to stop kept draining the strap. Stopping a stream is reversible and harmless.
+                || command == .stopRawData
+                || (command == .toggleIMUMode && payload == [0x01, 0x00])
                 // SET_CONFIG / SET_FF_VALUE (120), ENABLE direction — the R22 deep-stream unlock. Allowed
                 // only while the deep-data experiment is opted in, and only for a KEY and a VALUE the gate
                 // recognises: one of the sixteen R22 flags carrying that key's own enable value. The clause
@@ -3655,6 +3674,11 @@ public final class BLEManager: NSObject, ObservableObject {
         guard selectedModel.deviceFamily == .whoop5 else {
             log("Broadcast HR: strap family is not known yet — ignored."); return
         }
+        // Personal build: the device-config write and its read-back need the encrypted bond; on a live-HR
+        // only link they would trigger a refused pairing and drop the connection.
+        guard state.encryptedBond else {
+            log("Broadcast HR: this WHOOP 5/MG link is live-HR only (no encrypted bond) — pair the strap first."); return
+        }
         // Mutually exclusive with the ECG gate: both verify over the SAME 121 read-back opcode, so if both
         // were in flight one strap reply would be consumed by both handlers and cross-contaminate the other's
         // verdict (its key isn't echoed → a spurious notClaimed). Only one device-config write verifies at once.
@@ -4905,6 +4929,7 @@ public final class BLEManager: NSObject, ObservableObject {
         disRead = false
         disSerial = nil
         disHwRev = nil
+        disModelNumber = nil
         disFirmware = nil
         whoop5NotifyCharacteristics.removeAll()
     }
@@ -5117,7 +5142,8 @@ public final class BLEManager: NSObject, ObservableObject {
     /// The serial is a device identifier, so ONLY its 3-character prefix is logged (that is the entire
     /// information content here) — never the full string, which would land in a shareable strap log.
     private func noteWhoop5VariantFromDIS() {
-        let variant = Whoop5Variant.from(serial: disSerial, hardwareRevision: disHwRev)
+        let variant = Whoop5Variant.from(serial: disSerial, hardwareRevision: disHwRev,
+                                         modelNumber: disModelNumber)
         let prefix = (disSerial?.trimmingCharacters(in: .whitespacesAndNewlines).uppercased())
             .map { String($0.prefix(3)) } ?? "?"
         log("DIS: serialPrefix=\(prefix) hwRev=\(disHwRev ?? "?") -> variant=\(variant.label)")
@@ -5405,6 +5431,14 @@ public final class BLEManager: NSObject, ObservableObject {
     ///
     /// Haptic firing cannot be verified in the simulator (no strap motor). Test on-device only.
     func buzzStrapOnce() {
+        // Personal build: on a WHOOP 5/MG a buzz is a command write that only lands over the encrypted bond.
+        // On the HR-only link (the standard-profile shortcut that sets `bonded`, not `encryptedBond`) the
+        // write made iOS start a pairing the strap refuses, which dropped the link a few seconds later and
+        // buzzed nothing. Every buzz entry point (Live button, Buzz Strap shortcut) meets here.
+        if selectedModel.deviceFamily == .whoop5, !state.encryptedBond {
+            log("Buzz: skipped — this WHOOP 5/MG link is live-HR only (no encrypted bond). Pair the strap (blue LEDs) to enable buzz.")
+            return
+        }
         send(.runHapticsPattern, payload: [2, 3, 0, 0, 0], writeType: .withResponse)  // patternId=2, 3 loops (5/MG: send() remaps to the maverick notify buzz)
         if selectedModel.deviceFamily == .whoop5 {
             send(.runAlarm, payload: AlarmPayload.runAlarmRev2(), writeType: .withResponse)   // REVISION_2 [0x02, alarmId]
@@ -6327,8 +6361,15 @@ extension BLEManager: @preconcurrency CBCentralManagerDelegate {
         configureCollectorFamily()
         // Collection only runs post-bond, so a restored link was already bonded;
         // seed those flags now. `didWriteValueFor` won't re-fire on its own.
+        //
+        // Personal build: EXCEPT a WHOOP 5/MG whose CLIENT_HELLO is suppressed (#1635 latch): that strap has
+        // refused the handshake and streams HR over the standard profile only, so it was never encrypted-
+        // bonded. Restoring it as bonded lit "FULL BOND", enabled controls that need the bond, and blinded
+        // the refusal detectors for the session. It is restored as the live-HR link it actually is.
+        let restoredHrOnly = selectedModel.deviceFamily == .whoop5
+            && HelloSuppressionStore.suppressed(p.identifier.uuidString)
         state.bonded = true
-        didBond = true
+        didBond = !restoredHrOnly
         // #613: didConnect never fires for an ALREADY-connected restored peripheral, so publish the strap
         // identity HERE — BEFORE encryptedBond flips true — so SourceCoordinator sees the ordinary
         // (encryptedBond == false) identity semantics `didConnect` uses (adopt-if-unknown / never clobber a
@@ -6336,8 +6377,12 @@ extension BLEManager: @preconcurrency CBCentralManagerDelegate {
         // connectedPeripheralUUID stays nil the whole session: no identity to SourceCoordinator, and the
         // alarm diagnostics read "strap not connected" though the link is up.
         if p.state == .connected { connectedPeripheralUUID = p.identifier.uuidString }
-        state.encryptedBond = true   // a restored link was genuinely encrypted-bonded before (#69)
-        noteGenuineBond(of: p)   // #52: a restored link was genuinely bonded; eligible as a re-adopt target
+        if restoredHrOnly {
+            log("Restore: WHOOP 5/MG with CLIENT_HELLO suppressed — restoring as a live-HR link, not a full bond.")
+        } else {
+            state.encryptedBond = true   // a restored link was genuinely encrypted-bonded before (#69)
+            noteGenuineBond(of: p)   // #52: a restored link was genuinely bonded; eligible as a re-adopt target
+        }
         // clockRef is nil in the fresh process after restore, so we must re-request it.
         // Reset the flag so the post-restore didWriteValueFor issues exactly one getClock.
         clockRequested = false
@@ -7106,6 +7151,13 @@ extension BLEManager: @preconcurrency CBPeripheralDelegate {
                 // does. The other two start sites are post-bond, which a suppressed strap never reaches —
                 // and this also covers an unbonded 5/MG that has not latched yet.
                 startKeepAlive()
+            } else if selectedModel.deviceFamily == .whoop5, keepAliveTimer == nil {
+                // Personal build: `bonded` survives a disconnect by design, so after the FIRST reconnect the
+                // transition above never fires again, while the disconnect cancelled the timer. An HR-only
+                // 5/MG then ran every later link with no liveness watchdog and no battery poll. Arm it once
+                // per link instead: the timer is nil exactly when this link has none.
+                log("WHOOP 5/MG: live HR on a new link — re-arming the keep-alive.")
+                startKeepAlive()
             }
         case BLEManager.batteryChar:
             // 0x2A19 = percent — 5/MG ONLY. The WHOOP 4.0's 0x2A19 is a stub constant 100 (real value =
@@ -7148,7 +7200,15 @@ extension BLEManager: @preconcurrency CBPeripheralDelegate {
                 let shown = (disFirmware?.isEmpty ?? true) ? "?" : (disFirmware ?? "?")
                 log("DIS: firmware=\(shown) not published — a decoded value already stands")
             }
-        case BLEManager.disManufacturerChar, BLEManager.disModelNumberChar, BLEManager.disSwRevChar:
+        case BLEManager.disModelNumberChar:
+            // Personal build: the model number now feeds the 5/MG variant resolver (Android twin passes it
+            // too); `Whoop5Variant.from` already prefers a strap that SAYS "MG" over prefix inference (#520).
+            let v = String(decoding: bytes, as: UTF8.self)
+                .trimmingCharacters(in: CharacterSet(charactersIn: "\0").union(.whitespacesAndNewlines))
+            if !v.isEmpty { log("DIS: \(characteristic.uuid.uuidString) = \(v)") }
+            disModelNumber = v.isEmpty ? nil : v
+            if selectedModel.deviceFamily == .whoop5 { noteWhoop5VariantFromDIS() }
+        case BLEManager.disManufacturerChar, BLEManager.disSwRevChar:
             // Diagnostic only: nothing gates on these, but they cost one read each and are exactly what
             // is missing when someone reports an unidentified strap.
             let v = String(decoding: bytes, as: UTF8.self)
