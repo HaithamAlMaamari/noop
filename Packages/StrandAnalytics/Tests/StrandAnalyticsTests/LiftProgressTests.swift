@@ -5,7 +5,7 @@ import WhoopStore
 /// Personal build: double progression, estimated-1RM records and push/pull balance.
 final class LiftProgressTests: XCTestCase {
 
-    private func set(_ exercise: String = "Bench press", _ index: Int, _ kg: Double?, _ reps: Int?,
+    private func set(_ index: Int, _ kg: Double?, _ reps: Int?, exercise: String = "Bench press",
                      rpe: Double? = nil, warmup: Bool = false,
                      muscle: LiftMuscle? = .chest) -> LiftSetRow {
         LiftSetRow(id: UUID().uuidString, deviceId: "d", sessionId: "s", ord: index,
@@ -26,7 +26,8 @@ final class LiftProgressTests: XCTestCase {
     }
 
     func testLowerBodyAddsFive() {
-        let last = [set("Squat", 1, 100, 5, muscle: .quads), set("Squat", 2, 100, 5, muscle: .quads)]
+        let last = [set(1, 100, 5, exercise: "Squat", muscle: .quads),
+                    set(2, 100, 5, exercise: "Squat", muscle: .quads)]
         let s = LiftProgress.suggestion(lastSets: last, repsLow: 5, repsHigh: nil, maxRpe: nil, primaryMuscle: .quads)
         XCTAssertEqual(s?.kind, .addWeight)
         XCTAssertEqual(s?.weightKg, 105)
@@ -73,24 +74,28 @@ final class LiftProgressTests: XCTestCase {
 
     func testProgressFindsRecordsAndFourWeekChange() {
         let day = 86_400
-        let sessions: [(startTs: Int, sets: [LiftSetRow])] = [
-            (0, [set(1, 80, 8)]),                     // 101.33
-            (10 * day, [set(1, 82.5, 8)]),            // 104.5
-            (40 * day, [set(1, 85, 8), set("Row", 1, 70, 10, muscle: .upperBack)]),  // 107.67 — record
-        ]
+        var sessions: [(startTs: Int, sets: [LiftSetRow])] = []
+        sessions.append((startTs: 0, sets: [set(1, 80, 8)]))                 // 101.33
+        sessions.append((startTs: 10 * day, sets: [set(1, 82.5, 8)]))        // 104.5
+        let row = set(1, 70, 10, exercise: "Row", muscle: .upperBack)
+        sessions.append((startTs: 40 * day, sets: [set(1, 85, 8), row]))     // 107.67 — record
         let p = LiftProgress.progress(sessions: sessions)
         let bench = p.first { $0.exercise == "Bench press" }
         XCTAssertEqual(bench?.points.count, 3)
         XCTAssertEqual(bench?.latestIsRecord, true)
         XCTAssertEqual(bench?.bestTs, 40 * day)
-        XCTAssertEqual(bench?.changeOver4WeeksKg ?? 0, 85 * (1 + 8.0 / 30) - 82.5 * (1 + 8.0 / 30), accuracy: 0.001)
-        let row = p.first { $0.exercise == "Row" }
-        XCTAssertEqual(row?.latestIsRecord, false, "a first session is not a record against nothing")
-        XCTAssertNil(row?.changeOver4WeeksKg)
+        let epleyFactor: Double = 1.0 + 8.0 / 30.0
+        let expectedChange: Double = (85.0 - 82.5) * epleyFactor
+        let change: Double = bench?.changeOver4WeeksKg ?? 0
+        XCTAssertEqual(change, expectedChange, accuracy: 0.001)
+        let rowProgress = p.first { $0.exercise == "Row" }
+        XCTAssertEqual(rowProgress?.latestIsRecord, false, "a first session is not a record against nothing")
+        XCTAssertNil(rowProgress?.changeOver4WeeksKg)
     }
 
     func testHighRepSetsDoNotEstimate() {
-        let p = LiftProgress.progress(sessions: [(0, [set(1, 20, 20)])])
+        let only: [(startTs: Int, sets: [LiftSetRow])] = [(startTs: 0, sets: [set(1, 20, 20)])]
+        let p = LiftProgress.progress(sessions: only)
         XCTAssertTrue(p.isEmpty, "over the 12-rep ceiling there is no estimate to trend")
     }
 

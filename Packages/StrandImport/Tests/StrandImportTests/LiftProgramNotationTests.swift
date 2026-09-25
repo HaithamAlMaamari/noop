@@ -63,6 +63,50 @@ final class LiftProgramNotationTests: XCTestCase {
         XCTAssertTrue(r.warnings.isEmpty)
     }
 
+    /// The push/pull template shipped with the personal build imports cleanly: four programs, rep ranges
+    /// written "6 to 8" (Excel cannot turn that into a date), no warnings.
+    func testPushPullTemplateImports() throws {
+        let csv = """
+Program,Program note,Exercise,Primary muscle,Secondary muscles,Sets,Reps,Weight kg,Rest sec,Target max RPE,Note
+Push A,Heavy press day,Barbell Bench Press,Chest,"Front delts, Triceps",4,6 to 8,,180,8,"Shoulder blades pinned, 1 s pause on the chest"
+Push A,,Seated DB Shoulder Press,Front delts,"Side delts, Triceps",3,8 to 10,,120,8,
+Push A,,Incline DB Press,Chest,"Front delts, Triceps",3,8 to 12,,120,8,30° bench
+Push A,,Cable Lateral Raise,Side delts,,3,12 to 15,,60,9,
+Push A,,Triceps Rope Pushdown,Triceps,,3,10 to 12,,60,9,
+Push A,,Overhead Cable Triceps Extension,Triceps,,2,12 to 15,,60,9,
+Pull A,Heavy pull day,Weighted Pull-up,Lats,"Biceps, Upper back",4,6 to 8,,180,8,Weight = added load only
+Pull A,,Chest-Supported Row,Upper back,"Lats, Rear delts, Biceps",3,8 to 10,,120,8,
+Pull A,,Seated Cable Row,Upper back,"Lats, Biceps",3,10 to 12,,90,8,
+Pull A,,Face Pull,Rear delts,"Upper back, Traps",3,12 to 15,,60,9,
+Pull A,,EZ-Bar Curl,Biceps,Forearms,3,8 to 10,,90,9,
+Pull A,,Hammer Curl,Biceps,Forearms,2,10 to 12,,60,9,
+Push B,Volume press day,Incline Barbell Press,Chest,"Front delts, Triceps",4,8 to 10,,150,8,
+Push B,,Machine Chest Press,Chest,"Front delts, Triceps",3,10 to 12,,90,9,
+Push B,,DB Lateral Raise,Side delts,,4,12 to 15,,60,9,
+Push B,,Cable Fly,Chest,Front delts,3,12 to 15,,60,9,
+Push B,,Skull Crusher,Triceps,,3,10 to 12,,90,9,
+Pull B,Volume pull day,Lat Pulldown,Lats,"Biceps, Upper back",4,8 to 10,,120,8,
+Pull B,,One-Arm DB Row,Lats,"Upper back, Biceps",3,8 to 12,,90,8,
+Pull B,,Reverse Pec Deck,Rear delts,Upper back,3,12 to 15,,60,9,
+Pull B,,Straight-Arm Pulldown,Lats,,3,12 to 15,,60,9,
+Pull B,,Incline DB Curl,Biceps,,3,10 to 12,,60,9,
+"""
+        let r = try parse(csv)
+        XCTAssertEqual(r.programs.map(\.name), ["Push A", "Pull A", "Push B", "Pull B"])
+        XCTAssertTrue(r.warnings.isEmpty, "\(r.warnings)")
+        let bench = r.programs[0].lines[0]
+        XCTAssertEqual(bench.exercise, "Barbell Bench Press")
+        XCTAssertEqual(bench.targetSets, 4)
+        XCTAssertEqual(bench.targetReps, 6)
+        XCTAssertEqual(bench.targetRepsHigh, 8)
+        XCTAssertEqual(bench.targetMaxRpe, 8)
+        XCTAssertEqual(bench.restSec, 180)
+        XCTAssertNil(bench.targetWeightKg)
+        XCTAssertEqual(bench.primaryMuscle, .chest)
+        XCTAssertEqual(bench.secondaryMuscles, [.frontDelts, .triceps])
+        XCTAssertEqual(r.programs[1].lines.first?.secondaryMuscles, [.biceps, .upperBack])
+    }
+
     func testPureHelpers() {
         XCTAssertEqual(LiftProgramSheetImporter.integerTokens("3 x 8-10"), [3, 8, 10])
         XCTAssertNil(LiftProgramSheetImporter.setsByReps("10 max"))

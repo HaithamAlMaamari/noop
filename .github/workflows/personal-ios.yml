@@ -54,8 +54,14 @@ jobs:
       - name: Show compile errors
         if: failure()
         run: |
-          grep -nE "error:" build.log | head -80 || true
-          tail -60 build.log || true
+          grep -nE " error: " build.log | sed -E 's#^[0-9]+:/Users/runner/work/[^/]+/[^/]+/##' | head -60 > errors.txt || true
+          [ -s errors.txt ] || tail -40 build.log > errors.txt
+          cat errors.txt
+          # Annotations (15 lines each) so the errors can be read through the REST API without log access.
+          split -l 15 errors.txt err_ || true
+          for f in err_*; do
+            [ -f "$f" ] && echo "::error title=compile::$(perl -0pe 's/%/%25/g; s/\r/%0D/g; s/\n/%0A/g' "$f")"
+          done
 
       - name: Upload build log
         if: always()
@@ -125,4 +131,11 @@ jobs:
       - name: Failures
         if: failure()
         working-directory: Packages/${{ matrix.package }}
-        run: grep -nE "error:|failed" test.log | head -120 || true
+        run: |
+          grep -E "error:|failed" test.log | grep -v "passed" | sed -E 's#^/Users/runner/work/[^/]+/[^/]+/##' | head -60 > fails.txt || true
+          [ -s fails.txt ] || tail -40 test.log > fails.txt
+          cat fails.txt
+          split -l 15 fails.txt f_ || true
+          for f in f_*; do
+            [ -f "$f" ] && echo "::error title=${{ matrix.package }}::$(perl -0pe 's/%/%25/g; s/\r/%0D/g; s/\n/%0A/g' "$f")"
+          done
