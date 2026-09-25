@@ -120,7 +120,18 @@ enum UpdateWatch {
     /// from SettingsView, which had it private, so the button and the automatic check cannot disagree
     /// about what version is installed.
     static var installedVersion: String {
-        (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? AppChangelog.currentVersion
+        let marketing = (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String)
+            ?? AppChangelog.currentVersion
+        // Personal build: the fork's workflow stamps its run number into `NOOPPersonalBuild` and tags each
+        // release `v<marketing>.<run>`, so the installed build compares as `<marketing>.<run>`. A build
+        // without the stamp (0 / absent / unexpanded) keeps the plain marketing version.
+        return personalBuildNumber > 0 ? "\(marketing).\(personalBuildNumber)" : marketing
+    }
+
+    /// The personal workflow's run number, or 0 on any other build.
+    static var personalBuildNumber: Int {
+        let raw = (Bundle.main.object(forInfoDictionaryKey: "NOOPPersonalBuild") as? String) ?? ""
+        return Int(raw.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
     }
 
     /// Re-entrancy guard. `runIfDue` is called from `.onAppear`, which is not guaranteed to fire once,

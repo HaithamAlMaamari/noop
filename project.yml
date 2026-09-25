@@ -34,6 +34,11 @@ settings:
     # never hard-coded in Swift. Built from $(BUNDLE_ID_PREFIX) (see Config/BundleId.xcconfig) — set
     # BUNDLE_ID_PREFIX in a gitignored Config/BundleIdSecrets.xcconfig to build under your own Apple ID.
     APP_GROUP_ID: group.$(BUNDLE_ID_PREFIX).noop.staging
+    # Personal build: the fork whose releases the in-app update check reads, and the personal build number
+    # (the personal workflow's run number). Both are overridden on the xcodebuild command line by
+    # .github/workflows/personal-ios.yml; these defaults keep a plain build pointed at upstream.
+    NOOP_UPDATE_REPO: ryanbr/noop
+    NOOP_PERSONAL_BUILD: "0"
     # Build for both Apple Silicon and Intel so the release runs on every Mac.
     ARCHS: "$(ARCHS_STANDARD)"
   configs:
@@ -246,6 +251,9 @@ targets:
         # Surfaces APP_GROUP_ID to runtime (WidgetSnapshot.suiteName) so the App Group id isn't
         # hard-coded in Swift; stays in sync with the application-groups entitlement (both $(APP_GROUP_ID)).
         AppGroupIdentifier: "$(APP_GROUP_ID)"
+        # Personal build stamps (see settings.base): read by UpdateChecker / UpdateWatch.
+        NOOPUpdateRepo: "$(NOOP_UPDATE_REPO)"
+        NOOPPersonalBuild: "$(NOOP_PERSONAL_BUILD)"
         LSApplicationCategoryType: public.app-category.healthcare-fitness
         UILaunchScreen: {}
         # Alternate app icons (v3 "Titanium & Gold"). The primary icon stays the asset-catalog
@@ -355,11 +363,8 @@ targets:
       - package: ZIPFoundation
       - package: PolarProtocol
       - target: NOOPiOSWidgets
-      # Embed the watchOS app so the iPhone app carries it (NOOP.app/Watch/NOOPWatch.app). A watch app
-      # installs by riding inside its iOS companion; without this it would never reach a paired watch.
-      # Build-from-source delivers it for certain; sideload install of the embedded watch app under a free
-      # Apple ID is unproven (an Apple limitation), so the docs steer watch users to a source build for now.
-      - target: NOOPWatch
+      # Personal build: the embedded watchOS app is not built. The sideload IPA strips it anyway (a free
+      # Apple ID cannot install it), so building it only cost CI time.
 
   # WidgetKit + Live Activity extension — the iOS analogue of the macOS menu-bar
   # extra. Reads a tiny snapshot the app publishes into the shared App Group.

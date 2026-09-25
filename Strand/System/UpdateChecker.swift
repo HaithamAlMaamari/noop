@@ -28,7 +28,24 @@ final class UpdateChecker: ObservableObject {
 
     @Published var state: State = .idle
 
-    private static let endpoint = URL(string: "https://api.github.com/repos/ryanbr/noop/releases/latest")!
+    /// Personal build: the `owner/repo` whose releases this reads. Stamped at build time from the
+    /// NOOP_UPDATE_REPO build setting into the Info.plist key `NOOPUpdateRepo`, so a personal fork's
+    /// build checks its OWN releases instead of offering upstream's IPA over the customised one. Anything
+    /// that is not a clean `owner/repo` (absent key, unexpanded `$(…)`) falls back to upstream.
+    static var updateRepo: String {
+        let raw = ((Bundle.main.object(forInfoDictionaryKey: "NOOPUpdateRepo") as? String) ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let parts = raw.split(separator: "/", omittingEmptySubsequences: false)
+        let clean = parts.count == 2 && parts.allSatisfy { part in
+            !part.isEmpty && part.allSatisfy { $0.isLetter || $0.isNumber || $0 == "-" || $0 == "_" || $0 == "." }
+        }
+        return clean ? raw : "ryanbr/noop"
+    }
+
+    private static var endpoint: URL {
+        URL(string: "https://api.github.com/repos/\(updateRepo)/releases/latest")
+            ?? URL(string: "https://api.github.com/repos/ryanbr/noop/releases/latest")!
+    }
 
     /// One release read. Shared by the button and the automatic check (#1659) so there is exactly one
     /// copy of the endpoint, the headers and the parsing — a second copy is how the two would drift into
