@@ -98,8 +98,8 @@ enum ChargeBreakdownWiring {
         func history(_ value: (DailyMetric) -> Double?, _ calibrate: ((Double) -> Double)?) -> [String: Double?] {
             var imp: [String: Double?] = [:]
             var dev: [String: Double?] = [:]
-            for (day, m) in imported { imp[day] = value(m) }
-            for (day, m) in device { dev[day] = value(m) }
+            for (day, m) in imported { imp.updateValue(value(m), forKey: day) }   // keeps empty nights as gaps
+            for (day, m) in device { dev.updateValue(value(m), forKey: day) }
             return ImportCalibration.calibratedHistory(imported: imp, device: dev, calibrate: calibrate)
         }
         let hrvScale = ImportCalibration.scaling(cal.hrvRatio)

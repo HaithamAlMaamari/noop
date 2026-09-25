@@ -91,7 +91,9 @@ public enum ImportCalibration {
                                          calibrate: ((Double) -> Double)?) -> [String: Double?] {
         var out: [String: Double?] = [:]
         if let calibrate {
-            for (day, v) in imported { out[day] = v.map(calibrate) }
+            // `updateValue`, not a subscript assignment: `out[day] = v.map(calibrate)` type-checks as a
+            // `Double??` map that REMOVES the key for an empty night instead of keeping it as a gap.
+            for (day, v) in imported { out.updateValue(v.map(calibrate), forKey: day) }
         }
         for (day, v) in device {
             if let v {
