@@ -39,8 +39,8 @@ struct SmartAlarmView: View {
     // FrameRouter). ≥2 = the strap is persistently refusing the alarm (a corrupted clock/alarm register),
     // which the strapRejectedCard surfaces with reset guidance. @AppStorage so it updates live.
     @AppStorage("alarm.rejectStreak") private var alarmRejectStreak = 0
-    /// Calendar weekday numbers laid out Monday-first (Mon…Sun → 2,3,4,5,6,7,1), matching AutomationsView.
-    private static let weekdayOrder = [2, 3, 4, 5, 6, 7, 1]
+    /// Calendar weekday numbers in the personal build's week order (Sunday first; see `PersonalRegion`).
+    private static let weekdayOrder = PersonalRegion.weekdayOrder
 
     var body: some View {
         // #766: retitled to "Alarms" because it now holds BOTH the strap's silent wake-alarm and the
@@ -755,8 +755,9 @@ struct SmartAlarmView: View {
     /// Human-readable summary of the selection.
     nonisolated static func alarmWeekdaySummary(_ days: Set<Int>) -> String {
         if days.isEmpty || days.count == 7 { return String(localized: "Every day") }
-        if days == Set(2...6) { return String(localized: "Weekdays") }
-        if days == Set([1, 7]) { return String(localized: "Weekends") }
+        // Personal build: Sunday–Thursday is the working week and Friday–Saturday the weekend.
+        if days == PersonalRegion.workDays { return String(localized: "Weekdays") }
+        if days == PersonalRegion.weekendDays { return String(localized: "Weekends") }
         return weekdayOrder.filter { days.contains($0) }.map { alarmWeekdayShort($0) }.joined(separator: ", ")
     }
 

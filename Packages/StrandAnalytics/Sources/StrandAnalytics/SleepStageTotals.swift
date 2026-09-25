@@ -176,7 +176,11 @@ public enum SleepStageTotals {
     /// band (`isOvernightOnset`), so a genuine daytime nap (which is hours away AND begins in daytime)
     /// can never be folded into the night. Below `gapBridgeMaxMin` the unconditional bridge is unchanged
     /// (so `bridgeAdjacent` and its golden tests stay byte-identical). (#861)
-    public static let nightTailBridgeMaxMin = 90
+    ///
+    /// Personal build: 150 min. A night broken by a longer wake in the small hours — up for an hour and a
+    /// half or two, then back to sleep before morning — is still one night, not a main sleep plus a "nap".
+    /// The overnight-onset requirement is unchanged, so an afternoon nap is never folded in.
+    public static let nightTailBridgeMaxMin = 150
 
     /// One candidate block for main-night selection. The `start` is the EFFECTIVE onset (a user wake/
     /// bed edit moves `end`, never the detected onset key), and `tzOffsetSeconds` turns it local so the

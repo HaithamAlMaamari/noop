@@ -1163,18 +1163,33 @@ final class SleepStageTotalsTests: XCTestCase {
         XCTAssertEqual(group, [0], "a daytime-onset nap is never folded into the night by the wider bridge")
     }
 
-    /// The upper guard: a wake gap at/over `nightTailBridgeMaxMin` (90 min) is NOT a mid-night wake, so it stays
-    /// two blocks even for an overnight-band onset, so a genuinely separate early-morning sleep is not swallowed.
-    func testOvernightGapAtOrAboveNinetyMinutesDoesNotBridge() throws {
+    /// The upper guard: a wake gap at/over `nightTailBridgeMaxMin` (150 min in the personal build) is NOT a
+    /// mid-night wake, so it stays two blocks even for an overnight-band onset, so a genuinely separate
+    /// early-morning sleep is not swallowed.
+    func testOvernightGapAtOrAboveTheNightTailBridgeDoesNotBridge() throws {
         let a = ts525("2026-06-14T23:00")
         let aEnd = a + 3 * 3600                          // 23:00 → 02:00
-        let b = aEnd + 95 * 60                           // 03:35 onset (95-min gap ≥ nightTailBridgeMaxMin)
+        let b = aEnd + 155 * 60                          // 04:35 onset (155-min gap ≥ nightTailBridgeMaxMin)
         let blocks = [
             SleepStageTotals.NightBlock(start: a, end: aEnd),
             SleepStageTotals.NightBlock(start: b, end: b + 4 * 3600),
         ]
         let group = try XCTUnwrap(SleepStageTotals.mainNightGroupIndices(blocks, offsetSec: 0))
-        XCTAssertEqual(group, [1], "a ≥90-min wake is not a night-tail; the blocks stay separate")
+        XCTAssertEqual(group, [1], "a ≥150-min wake is not a night-tail; the blocks stay separate")
+    }
+
+    /// Personal build: a two-hour wake in the small hours (up at 02:00, back to sleep at 04:00) keeps the
+    /// night whole instead of turning its first half into a nap.
+    func testTwoHourSmallHoursWakeStaysOneNight() throws {
+        let a = ts525("2026-06-14T23:00")
+        let aEnd = a + 3 * 3600                          // 23:00 → 02:00
+        let b = aEnd + 120 * 60                          // 04:00 onset (120-min wake)
+        let blocks = [
+            SleepStageTotals.NightBlock(start: a, end: aEnd),
+            SleepStageTotals.NightBlock(start: b, end: b + 3 * 3600),
+        ]
+        let group = try XCTUnwrap(SleepStageTotals.mainNightGroupIndices(blocks, offsetSec: 0))
+        XCTAssertEqual(group.sorted(), [0, 1])
     }
 
     // MARK: - #561 stages-path seam sums the bridged group (analyzeDay parity)
