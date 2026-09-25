@@ -1,0 +1,78 @@
+# Personal build: keep the `personal` branch current with upstream (ryanbr/noop main) and rebuild.
+#
+# Weekly, merge upstream main into `personal`. A clean merge is pushed and the IPA workflow is started, so
+# upstream fixes (WHOOP 5/MG support is still moving fast) reach the personal build without anyone doing
+# anything. A conflicting merge is abandoned and reported; the last good build stays installed.
+#
+# Upstream's own workflow files are kept out of the merge: the personal build does not use them, and the
+# workflow token is not allowed to push changes to .github/workflows.
+#
+# Scheduled workflows only run from a repository's DEFAULT branch, so this needs `personal` set as the
+# fork's default branch (Settings -> General -> Default branch). "Run workflow" works from there too.
+name: Personal upstream sync
+
+on:
+  schedule:
+    - cron: '23 2 * * 0'      # Sundays 02:23 UTC (06:23 in Muscat)
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: personal-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: personal
+          fetch-depth: 0
+
+      - name: Merge upstream main
+        id: merge
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote add upstream https://github.com/ryanbr/noop.git
+          git fetch --no-tags upstream main
+          BEFORE=$(git rev-parse HEAD)
+          if git merge-base --is-ancestor upstream/main HEAD; then
+            echo "Already up to date with upstream."
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if ! git merge --no-commit --no-ff upstream/main; then
+            # Conflicts confined to upstream's workflow files are not conflicts for this build: those files
+            # are restored below. Anything else is reported and the merge abandoned.
+            CONFLICTS=$(git diff --name-only --diff-filter=U | grep -v '^\.github/workflows/' | tr '\n' ' ' || true)
+            if [ -n "${CONFLICTS// /}" ]; then
+              git merge --abort
+              echo "::error title=sync::Upstream conflicts with the personal commits in: ${CONFLICTS}"
+              exit 1
+            fi
+          fi
+          # Keep the personal workflow directory exactly as it was, inside the merge commit itself, so no
+          # pushed commit changes .github/workflows (the workflow token may not).
+          git rm -r -q --cached .github/workflows
+          git checkout "$BEFORE" -- .github/workflows
+          git add .github/workflows
+          git clean -fdq .github/workflows
+          git commit -q --no-edit -m "personal: merge upstream $(git rev-parse --short upstream/main)"
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+          git log --oneline -5
+
+      - name: Push and build
+        if: steps.merge.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git push origin HEAD:personal
+          # A push made with the workflow token starts no workflow on its own; a dispatch does.
+          gh workflow run personal-ios.yml --ref personal --repo "$GITHUB_REPOSITORY"
