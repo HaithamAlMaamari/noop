@@ -194,7 +194,12 @@ struct LiftProgramEditorSheet: View {
         var parts: [String] = []
         if let sets = item.targetSets {
             if let reps = item.targetRepsLow {
-                parts.append("\(sets) × \(reps)")
+                // Personal build: a rep range reads as one ("4 × 8–10").
+                if let high = item.targetRepsHigh, high > reps {
+                    parts.append("\(sets) × \(reps)–\(high)")
+                } else {
+                    parts.append("\(sets) × \(reps)")
+                }
             } else {
                 parts.append(String(localized: "\(sets) sets"))
             }

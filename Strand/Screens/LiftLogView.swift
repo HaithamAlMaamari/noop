@@ -34,6 +34,8 @@ struct LiftLogView: View {
     @State private var weekCounts: [LiftMuscle: Double] = [:]
     /// The session whose detail sheet is open.
     @State private var viewing: SessionDetailTarget?
+    /// Personal build: estimated-1RM history per exercise over the loaded sessions.
+    @State private var progress: [LiftProgress.ExerciseProgress] = []
 
     @AppStorage(UnitPrefs.systemKey) private var unitSystemRaw = UnitSystem.metric.rawValue
     private var unitSystem: UnitSystem { UnitSystem(rawValue: unitSystemRaw) ?? .metric }
@@ -48,6 +50,8 @@ struct LiftLogView: View {
                 headerCard
                 programsSection
                 weekSection
+                balanceSection
+                progressSection
                 historySection
             }
         }
@@ -311,6 +315,124 @@ struct LiftLogView: View {
         }
     }
 
+    // MARK: - Personal build: push / pull balance
+
+    /// This week's sets on each side of a push/pull split (rear delts count as pull). Shown once there is
+    /// work to compare; the ratio only once both sides have some.
+    @ViewBuilder
+    private var balanceSection: some View {
+        let b = LiftProgress.balance(weekCounts)
+        if b.total > 0 {
+            VStack(alignment: .leading, spacing: NoopMetrics.gap) {
+                SectionHeader("Push vs pull", overline: "Last 7 days · estimated sets")
+                NoopCard {
+                    VStack(alignment: .leading, spacing: NoopMetrics.rowSpacing) {
+                        HStack(spacing: NoopMetrics.gap) {
+                            balanceStat("Push", b.push)
+                            balanceStat("Pull", b.pull)
+                            balanceStat("Legs", b.legs)
+                            balanceStat("Trunk", b.trunk)
+                        }
+                        if let ratio = b.pullPerPush {
+                            GeometryReader { geo in
+                                let pushShare = CGFloat(b.push / (b.push + b.pull))
+                                HStack(spacing: 2) {
+                                    Capsule()
+                                        .fill(StrandPalette.effortColor)
+                                        .frame(width: max(2, geo.size.width * pushShare - 1))
+                                    Capsule()
+                                        .fill(StrandPalette.accent)
+                                        .frame(maxWidth: .infinity)
+                                }
+                            }
+                            .frame(height: 8)
+                            .accessibilityHidden(true)
+                            Text("\(LiftFormat.trim((ratio * 100).rounded() / 100)) pull sets per push set this week. A ratio near 1 is the balance most push/pull programs aim for; well under 1 means pressing is outpacing pulling.")
+                                .font(StrandFont.footnote)
+                                .foregroundStyle(StrandPalette.textTertiary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        } else {
+                            Text("The ratio appears once both pushing and pulling sets are logged this week.")
+                                .font(StrandFont.footnote)
+                                .foregroundStyle(StrandPalette.textTertiary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func balanceStat(_ label: String, _ sets: Double) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(label)
+                .font(StrandFont.caption)
+                .foregroundStyle(StrandPalette.textSecondary)
+            Text(LiftFormat.trim(sets))
+                .font(StrandFont.bodyNumber)
+                .foregroundStyle(StrandPalette.textPrimary)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .combine)
+    }
+
+    // MARK: - Personal build: strength trend
+
+    /// Estimated 1RM per exercise, most recently trained first: the best set of each session, a PR mark
+    /// when the latest session beat every earlier one, and the change over four weeks.
+    @ViewBuilder
+    private var progressSection: some View {
+        if !progress.isEmpty {
+            VStack(alignment: .leading, spacing: NoopMetrics.gap) {
+                SectionHeader("Strength trend", overline: "Estimated 1RM · last 6 months")
+                NoopCard {
+                    VStack(alignment: .leading, spacing: NoopMetrics.rowSpacing) {
+                        ForEach(Array(progress.prefix(8)), id: \.exercise) { p in
+                            progressRow(p)
+                        }
+                        Text("Each point is a session's best set by the Epley estimate (sets of 12 reps or fewer, warm-ups excluded). Useful for one exercise over time, not for comparing exercises.")
+                            .font(StrandFont.footnote)
+                            .foregroundStyle(StrandPalette.textTertiary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+            }
+        }
+    }
+
+    private func progressRow(_ p: LiftProgress.ExerciseProgress) -> some View {
+        var detail = "Best \(LiftFormat.weight(p.bestKg, system: unitSystem))"
+        if let change = p.changeOver4WeeksKg {
+            let shown = LiftFormat.trim(LiftFormat.display(fromKilograms: abs(change), system: unitSystem))
+            let unit = LiftFormat.weightUnit(unitSystem)
+            detail += change >= 0 ? " · +\(shown) \(unit) in 4 weeks" : " · −\(shown) \(unit) in 4 weeks"
+        }
+        return HStack(spacing: NoopMetrics.gap) {
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 6) {
+                    Text(p.exercise)
+                        .font(StrandFont.body)
+                        .foregroundStyle(StrandPalette.textPrimary)
+                        .lineLimit(1)
+                    if p.latestIsRecord {
+                        StatePill("PR", tone: .positive, showsDot: false)
+                    }
+                }
+                Text(detail)
+                    .font(StrandFont.caption)
+                    .foregroundStyle(StrandPalette.textSecondary)
+            }
+            Spacer(minLength: 0)
+            if p.points.count >= 2 {
+                Sparkline(values: p.points.map { LiftFormat.display(fromKilograms: $0.e1rmKg, system: unitSystem) },
+                          gradient: StrandPalette.effortGradient,
+                          showsHover: false)
+                    .frame(width: 88, height: 28)
+                    .accessibilityHidden(true)
+            }
+        }
+    }
+
     // MARK: - History
 
     private var historySection: some View {
@@ -371,6 +493,14 @@ struct LiftLogView: View {
         weekCounts = (try? await store.liftSetCounts(deviceId: repo.deviceId,
                                                       fromTs: now - 7 * 86_400,
                                                       toTs: now).fractional) ?? [:]
+        // Personal build: the sets behind each loaded session, for the estimated-1RM trend. One small
+        // query per session (a few dozen over six months), run on refresh rather than per frame.
+        var sessionsWithSets: [(startTs: Int, sets: [LiftSetRow])] = []
+        for s in history {
+            let sets = (try? await store.liftSets(sessionId: s.id)) ?? []
+            sessionsWithSets.append((startTs: s.startTs, sets: sets))
+        }
+        progress = LiftProgress.progress(sessions: sessionsWithSets)
         loaded = true
     }
 }

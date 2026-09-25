@@ -1,5 +1,6 @@
 import SwiftUI
 import StrandDesign
+import StrandAnalytics
 import WhoopStore
 
 // The workout sheet: every exercise and every set of the session, on one scrollable page.
@@ -65,6 +66,8 @@ struct LiftSessionView: View {
     /// the engine and to disk on every keystroke, so nothing about durability changes. The draft is
     /// dropped when focus leaves and the row goes back to the canonical formatting.
     @State private var draft: [FocusTarget: String] = [:]
+    /// Personal build: the double-progression suggestion per exercise, from its last session.
+    @State private var progression: [String: LiftProgress.Suggestion] = [:]
 
     private var engine: LiftSessionEngine? { session.engine }
 
@@ -190,6 +193,12 @@ struct LiftSessionView: View {
                                                 secondaries: item.secondaryMuscles))
                         .font(StrandFont.caption)
                         .foregroundStyle(StrandPalette.textTertiary)
+                    Text(targetLine(item))
+                        .font(StrandFont.caption)
+                        .foregroundStyle(StrandPalette.textSecondary)
+                }
+                if let suggestion = progression[item.exercise] {
+                    progressionHint(suggestion)
                 }
                 if let note = item.note, !note.isEmpty {
                     Text(note)
@@ -787,6 +796,74 @@ struct LiftSessionView: View {
         }
     }
 
+    // MARK: - Personal build: targets and double progression
+
+    /// "Target 4 × 8–10 · RPE ≤ 8" — the plan line as a lifter reads it, including the top of a rep range
+    /// the grey numbers alone cannot show.
+    private func targetLine(_ item: LiftPlanItem) -> String {
+        let reps: String?
+        switch (item.targetRepsLow, item.targetRepsHigh) {
+        case let (low?, high?) where high > low: reps = "\(low)–\(high)"
+        case let (low?, _):                      reps = "\(low)"
+        case (nil, let high?):                   reps = "\(high)"
+        default:                                 reps = nil
+        }
+        var parts: [String] = []
+        if let reps {
+            parts.append("\(item.targetSets) × \(reps)")
+        } else {
+            parts.append(item.targetSets == 1 ? "1 set" : "\(item.targetSets) sets")
+        }
+        if let rpe = item.targetRpe { parts.append("RPE ≤ \(LiftFormat.trim(rpe))") }
+        if item.restSec > 0 { parts.append("rest \(LiftFormat.duration(item.restSec))") }
+        return "Target " + parts.joined(separator: " · ")
+    }
+
+    /// The double-progression rule applied to last session's sets, stated with the numbers it used.
+    private func progressionHint(_ s: LiftProgress.Suggestion) -> some View {
+        let unit = LiftFormat.weightUnit(unitSystem)
+        let range = s.repsHigh > s.repsLow ? "\(s.repsLow)–\(s.repsHigh)" : "\(s.repsLow)"
+        let last = s.lastReps.map(String.init).joined(separator: ", ")
+        let headline: String
+        let detail: String
+        let symbol: String
+        switch s.kind {
+        case .addWeight:
+            headline = "Next: \(display(s.weightKg)) \(unit) × \(range)"
+            detail = "Every set reached \(s.repsHigh) at \(display(s.lastWeightKg)) \(unit) last time (\(last)), so add \(display(s.incrementKg)) \(unit) and build back up."
+            symbol = "arrow.up.circle.fill"
+        case .addReps:
+            headline = "Next: \(display(s.weightKg)) \(unit) × \(range), one more rep"
+            detail = "Last time \(display(s.lastWeightKg)) \(unit) went \(last). Stay on this weight until every set reaches \(s.repsHigh)."
+            symbol = "plus.circle.fill"
+        case .hold:
+            headline = "Next: repeat \(display(s.weightKg)) \(unit)"
+            detail = "Last time went \(last) at \(display(s.lastWeightKg)) \(unit), short of the range or above the RPE ceiling, so own this weight first."
+            symbol = "equal.circle.fill"
+        }
+        return HStack(alignment: .top, spacing: 8) {
+            Image(systemName: symbol)
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(StrandPalette.effortColor)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(headline)
+                    .font(StrandFont.caption)
+                    .foregroundStyle(StrandPalette.textPrimary)
+                Text(detail)
+                    .font(StrandFont.caption)
+                    .foregroundStyle(StrandPalette.textTertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(StrandPalette.effortColor.opacity(0.10),
+                    in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .accessibilityElement(children: .combine)
+    }
+
     // MARK: - Loading and saving
 
     /// What was lifted for each of this session's exercises LAST time, by set number — the middle
@@ -794,6 +871,7 @@ struct LiftSessionView: View {
     private func loadLastTime() async {
         guard let engine, let store = await repo.storeHandle() else { return }
         var out: [String: [Int: LiftSetCarry]] = [:]
+        var suggestions: [String: LiftProgress.Suggestion] = [:]
         // One query per DISTINCT exercise, not per plan line. A program that programs the same
         // movement twice — or an imported one with many lines — would otherwise re-ask the store the
         // same question, and this runs when the sheet opens.
@@ -806,8 +884,19 @@ struct LiftSessionView: View {
                 bySet[r.setIndex] = LiftSetCarry(weightKg: r.weightKg, reps: r.reps)
             }
             out[exercise] = bySet
+            // Personal build: the double-progression rule over the same rows, against the FIRST plan line
+            // for this exercise (a program that lists it twice plans the first one as the main work).
+            if let line = engine.plan.first(where: { $0.exercise == exercise }),
+               let suggestion = LiftProgress.suggestion(lastSets: rows,
+                                                        repsLow: line.targetRepsLow,
+                                                        repsHigh: line.targetRepsHigh,
+                                                        maxRpe: line.targetRpe,
+                                                        primaryMuscle: line.primaryMuscle) {
+                suggestions[exercise] = suggestion
+            }
         }
         session.setLastSession(out)
+        progression = suggestions
     }
 
     private func save() async {

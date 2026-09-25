@@ -29,6 +29,8 @@ struct LiftProgramItemSheet: View {
 
     @State private var setsText: String = ""
     @State private var repsText: String = ""
+    /// Personal build: the top of a rep range ("8–10" → reps 8, top 10). Empty = a single rep count.
+    @State private var repsTopText: String = ""
     @State private var weightText: String = ""
     @State private var restText: String = ""
     @State private var maxRpeText: String = ""
@@ -51,7 +53,7 @@ struct LiftProgramItemSheet: View {
     }
 
     @FocusState private var focused: Field?
-    private enum Field: Hashable { case exercise, sets, reps, weight, rest, maxRpe, note }
+    private enum Field: Hashable { case exercise, sets, reps, repsTop, weight, rest, maxRpe, note }
 
     private var trimmedExercise: String {
         exercise.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -197,7 +199,11 @@ struct LiftProgramItemSheet: View {
                         field("Max RPE (1–10)") {
                             numberInput("8", text: $maxRpeText, field: .maxRpe)
                         }
-                        Color.clear.frame(maxWidth: .infinity, maxHeight: 0)
+                        // Personal build: a rep RANGE, which double progression needs. Reps is its
+                        // bottom; this is its top.
+                        field("Top of rep range") {
+                            numberInput("10", text: $repsTopText, field: .repsTop)
+                        }
                     }
                     if maxRpeInvalid {
                         Text("Max RPE must be between 1 and 10.")
@@ -205,6 +211,10 @@ struct LiftProgramItemSheet: View {
                             .foregroundStyle(StrandPalette.statusWarning)
                     }
                     Text("Max RPE is a ceiling: the hardest a set should feel, where 10 means nothing left. It shows grey during the session, and a set you leave unrated saves it as its rating.")
+                        .font(StrandFont.footnote)
+                        .foregroundStyle(StrandPalette.textTertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Text("Give a rep range (Reps 8, Top 10) and the session suggests the next step: once every set reaches the top at or under your max RPE, add weight and work back up.")
                         .font(StrandFont.footnote)
                         .foregroundStyle(StrandPalette.textTertiary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -296,6 +306,7 @@ struct LiftProgramItemSheet: View {
             exercise = item.exercise
             setsText = item.targetSets.map(String.init) ?? ""
             repsText = item.targetRepsLow.map(String.init) ?? ""
+            repsTopText = item.targetRepsHigh.map(String.init) ?? ""
             weightText = item.targetWeightKg.map {
                 LiftFormat.trim(LiftFormat.display(fromKilograms: $0, system: unitSystem))
             } ?? ""
@@ -311,6 +322,13 @@ struct LiftProgramItemSheet: View {
             primary = known.primaryMuscle
             secondaries = Set(known.secondaryMuscles)
         }
+    }
+
+    /// The top of the rep range when it is a real range (above the bottom), else nil.
+    private var rangeTop: Int? {
+        guard let top = Int(repsTopText.trimmingCharacters(in: .whitespaces)), top > 0 else { return nil }
+        if let low = Int(repsText.trimmingCharacters(in: .whitespaces)), top <= low { return nil }
+        return top
     }
 
     private func save() async {
@@ -345,9 +363,10 @@ struct LiftProgramItemSheet: View {
             ord: item?.ord ?? 0,
             exercise: name,
             targetSets: Int(setsText.trimmingCharacters(in: .whitespaces)),
-            // ONE rep count: `targetRepsHigh` stays nil, a schema column the editor no longer fills.
+            // Personal build: the top of the range is kept when it sits above the bottom; otherwise the
+            // line plans ONE rep count and `targetRepsHigh` stays nil.
             targetRepsLow: Int(repsText.trimmingCharacters(in: .whitespaces)),
-            targetRepsHigh: nil,
+            targetRepsHigh: rangeTop,
             targetRpe: maxRpe,
             targetWeightKg: LiftFormat.number(weightText).map {
                 LiftFormat.kilograms(fromDisplay: $0, system: unitSystem)

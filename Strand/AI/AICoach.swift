@@ -283,6 +283,12 @@ final class AICoachEngine: ObservableObject {
     (Zone 2, mobility, extra sleep) and protect against accumulating effort debt.
     • Workout optimisation: progressive overload, polarised ~80/20 intensity, space hard sessions, \
     program deloads/periodisation, and treat sleep as the single biggest recovery lever.
+    • Strength training: when a STRENGTH TRAINING block from the user's Lift Log is included, coach \
+    it like a strength coach for a push/pull split: name today's session (push, pull, or rest) from \
+    what was trained last and today's charge, give the main lifts' targets from the logged top sets \
+    and estimated 1RMs (double progression: add weight once every working set reaches the top of \
+    the rep range), and flag a push/pull imbalance or a stalled lift. Effort is heart-rate based and \
+    under-reads lifting, so judge lifting load from the sets, not from effort.
     • Always cite the user's ACTUAL numbers, give a concrete plan (today and the week ahead), and \
     be specific, punchy and motivating - like a coach who knows them.
     If no data is provided, coach generally and invite them to turn on data access for personalised \
@@ -923,7 +929,8 @@ final class AICoachEngine: ObservableObject {
     private static let briefInstruction = """
     Based on the data above, give me TODAY'S coaching brief in three short parts: \
     (1) my readiness in one line, citing charge, HRV and rest; \
-    (2) exactly what training to do today and what to avoid; \
+    (2) exactly what training to do today and what to avoid (if my strength log is included, say \
+    push, pull or rest and give the main lifts' targets); \
     (3) one specific thing to improve my charge. Be punchy and motivating.
     """
 
@@ -951,6 +958,10 @@ final class AICoachEngine: ObservableObject {
     func buildFullContext() async -> String {
         var ctx = buildContext()
         ctx += "\n\n" + (await recentWorkoutsBlock())
+        // Personal build: what was LIFTED, not only that a workout happened (the workout rows carry no
+        // sets). Rides the same consent and text-only channel as the rest of the context.
+        let lifting = await liftingBlock()
+        if !lifting.isEmpty { ctx += "\n\n" + lifting }
         // Derived stress: a single Baevsky Stress Index summary line over today's R-R, computed the same
         // way StressView does. Gated here under `dataConsent` (the caller only reaches buildFullContext()
         // with consent on), so it rides the SAME consent + text-only channel as the HRV/RHR summary, a
@@ -1248,6 +1259,45 @@ final class AICoachEngine: ObservableObject {
                 parts.append(UnitFormatter.distanceFromMeters(dist, system: distanceSystem))
             }
             lines.append(parts.joined(separator: ", "))
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    /// Personal build: the Lift Log as the coach sees it. Summary lines only: per finished session in the
+    /// last `days` days its date, program, duration and session RPE, then each exercise's working sets, top
+    /// set and estimated 1RM; then this week's sets per side of a push/pull split. Empty when nothing is
+    /// logged, so the context carries no heading over nothing.
+    func liftingBlock(days: Int = 14) async -> String {
+        guard let store = await repo.storeHandle() else { return "" }
+        let now = Int(Date().timeIntervalSince1970)
+        let sessions = ((try? await store.liftSessions(deviceId: repo.deviceId,
+                                                        fromTs: now - days * 86_400,
+                                                        toTs: now)) ?? [])
+            .filter { $0.endTs != nil }
+            .sorted { $0.startTs > $1.startTs }
+        guard !sessions.isEmpty else { return "" }
+        var lines = ["STRENGTH TRAINING (the user's own Lift Log, newest first; kg; e1RM = Epley estimate from the best set):"]
+        for session in sessions.prefix(8) {
+            let sets = (try? await store.liftSets(sessionId: session.id)) ?? []
+            var head = "  \(dateString(session.startTs)) \(session.programName ?? "freehand session")"
+            if let end = session.endTs, end > session.startTs { head += ", \((end - session.startTs) / 60) min" }
+            if let rpe = session.sessionRpe { head += ", session RPE \(LiftFormat.trim(rpe))" }
+            lines.append(head + ":")
+            for e in LiftMetrics.perExercise(sets).prefix(10) {
+                var part = "    \(e.exercise): \(e.workingSets) working set\(e.workingSets == 1 ? "" : "s")"
+                if let w = e.bestWeightKg, let r = e.bestReps { part += ", top set \(LiftFormat.trim(w)) × \(r)" }
+                if let e1 = e.bestEstimatedOneRepMaxKg { part += ", e1RM \(LiftFormat.trim((e1 * 10).rounded() / 10))" }
+                lines.append(part)
+            }
+        }
+        let week = (try? await store.liftSetCounts(deviceId: repo.deviceId,
+                                                    fromTs: now - 7 * 86_400,
+                                                    toTs: now).fractional) ?? [:]
+        let balance = LiftProgress.balance(week)
+        if balance.total > 0 {
+            lines.append("  Last 7 days, estimated sets per side: push \(LiftFormat.trim(balance.push)), "
+                         + "pull \(LiftFormat.trim(balance.pull)), legs \(LiftFormat.trim(balance.legs)), "
+                         + "trunk \(LiftFormat.trim(balance.trunk)).")
         }
         return lines.joined(separator: "\n")
     }
