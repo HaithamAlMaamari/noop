@@ -59,7 +59,7 @@ struct SettingsView: View {
     /// #1545 opt-in: score Effort with Banister's exponential TRIMP instead of Edwards' heart-rate zones.
     /// Default OFF — it re-scores the whole window against a different recipe. See
     /// [PuffinExperiment.banisterEffortKey].
-    @AppStorage(PuffinExperiment.banisterEffortKey) private var banisterEffortEnabled = false
+    @AppStorage(PuffinExperiment.banisterEffortKey) private var banisterEffortEnabled = PuffinExperiment.banisterEffortDefault
 
     /// Opt-in "Continuous HRV capture" (off by default) — holds the dense realtime stream armed 24/7 so
     /// the strap banks beat-to-beat R-R for better overnight HRV/recovery/sleep, at a battery cost.

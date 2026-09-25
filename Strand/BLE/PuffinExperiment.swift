@@ -102,7 +102,13 @@ enum PuffinExperiment {
     /// not rescale the axis under the user. Mirrors the Android `NoopPrefs.KEY_BANISTER_EFFORT`.
     static let banisterEffortKey = "noopBanisterEffort"
 
-    static var banisterEffortEnabled: Bool { UserDefaults.standard.bool(forKey: banisterEffortKey) }
+    /// Personal build: ON unless the user has switched it off. A push/pull lifter's sessions average out
+    /// under half of heart-rate reserve between sets, where the Edwards zones score nothing, so the
+    /// exponential curve is the honest default for this build. The Settings toggle still switches it.
+    static let banisterEffortDefault = true
+    static var banisterEffortEnabled: Bool {
+        UserDefaults.standard.object(forKey: banisterEffortKey) as? Bool ?? banisterEffortDefault
+    }
 
     /// The TRIMP recipe every Effort computation on this device should use.
     static var effortMethod: StrainScorer.Method { banisterEffortEnabled ? .banister : .edwards }
