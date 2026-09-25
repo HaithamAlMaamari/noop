@@ -48,6 +48,11 @@ struct RawDataCollectorView: View {
         .onChangeCompat(of: live.bonded) { bonded in
             if bonded, let active = store.active { _ = model.ble.startGroundTruthRawCapture(sessionId: active.id) }
         }
+        .onChangeCompat(of: live.encryptedBond) { encrypted in
+            // A 5/MG can bond live-HR-only first and reach the encrypted bond a moment later; the capture
+            // is refused until then, so re-arm when it arrives. A duplicate arm is rejected by the BLE layer.
+            if encrypted, let active = store.active { _ = model.ble.startGroundTruthRawCapture(sessionId: active.id) }
+        }
         .confirmationDialog("Delete this session?", isPresented: Binding(
             get: { deleteCandidate != nil }, set: { if !$0 { deleteCandidate = nil } }
         ), titleVisibility: .visible) {
@@ -86,8 +91,7 @@ struct RawDataCollectorView: View {
         StrandCard {
             VStack(alignment: .leading, spacing: NoopMetrics.space2) {
                 Text("Capture coverage").font(StrandFont.headline).foregroundStyle(StrandPalette.textPrimary)
-                Text(live.connected ? "Band: connected\(live.bonded ? " + paired" : "; pairing")"
-                                    : "Band: disconnected")
+                Text(bandLine)
                     .foregroundStyle(live.connected ? StrandPalette.statusPositive : StrandPalette.statusCritical)
                 Text(live.backfilling
                      ? "History sync: running (\(live.syncChunksThisSession) chunks)"
@@ -102,6 +106,14 @@ struct RawDataCollectorView: View {
         }
     }
 
+    private var bandLine: String {
+        guard live.connected else { return "Band: disconnected" }
+        guard live.bonded else { return "Band: connected; pairing" }
+        return model.ble.groundTruthRawCaptureReady
+            ? "Band: connected + paired"
+            : "Band: connected; live heart rate only, pair the strap for raw data"
+    }
+
     @ViewBuilder private var controls: some View {
         if store.active != nil {
             NoopButton("Stop session", systemImage: "stop.fill", kind: .destructive,
@@ -109,7 +121,7 @@ struct RawDataCollectorView: View {
         } else {
             NoopButton("Start raw-data session", systemImage: "record.circle", kind: .primary,
                        fullWidth: true) { start() }
-                .disabled(!live.bonded)
+                .disabled(!(live.bonded && model.ble.groundTruthRawCaptureReady))
         }
     }
 

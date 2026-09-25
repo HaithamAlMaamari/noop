@@ -176,9 +176,11 @@ final class SmartAlarmWeekdayTests: XCTestCase {
     func testSummary_labels() {
         XCTAssertEqual(SmartAlarmView.alarmWeekdaySummary([]), "Every day")
         XCTAssertEqual(SmartAlarmView.alarmWeekdaySummary(Set(1...7)), "Every day")
-        XCTAssertEqual(SmartAlarmView.alarmWeekdaySummary(Set(2...6)), "Weekdays")
-        XCTAssertEqual(SmartAlarmView.alarmWeekdaySummary(Set([1, 7])), "Weekends")
-        // Mixed set lists Monday-first short names.
+        // Personal build (PersonalRegion): Sunday–Thursday is the working week, Friday–Saturday the weekend.
+        XCTAssertEqual(SmartAlarmView.alarmWeekdaySummary(Set(1...5)), "Weekdays")
+        XCTAssertEqual(SmartAlarmView.alarmWeekdaySummary(Set([6, 7])), "Weekends")
+        // Mixed set lists Sunday-first short names.
         XCTAssertEqual(SmartAlarmView.alarmWeekdaySummary(Set([2, 4])), "Mon, Wed")
+        XCTAssertEqual(SmartAlarmView.alarmWeekdaySummary(Set([1, 7])), "Sun, Sat")
     }
 }

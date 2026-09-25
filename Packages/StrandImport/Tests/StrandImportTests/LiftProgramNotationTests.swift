@@ -35,6 +35,40 @@ final class LiftProgramNotationTests: XCTestCase {
         XCTAssertTrue(r.warnings[0].hasPrefix("Row 7:"))
     }
 
+    /// Ranges keep their lower bound (the shortest rest the plan allows), and minutes-plus-seconds written
+    /// out in words or letters add up, instead of being read digit by digit.
+    func testRestRangesAndCompoundTimes() {
+        func rest(_ raw: String) -> Int? { LiftProgramSheetImporter.restSeconds(raw)?.seconds }
+        XCTAssertEqual(rest("2-3 min"), 120)
+        XCTAssertEqual(rest("2 to 3 min"), 120)
+        XCTAssertEqual(rest("3-2 min"), 120)
+        XCTAssertEqual(rest("60-90s"), 60)
+        XCTAssertEqual(rest("90s-2min"), 90)
+        XCTAssertEqual(rest("90 sec - 2 min"), 90)
+        XCTAssertEqual(rest("1-1.5 min"), 60)
+        XCTAssertEqual(rest("2-3'"), 120)
+        XCTAssertEqual(rest("1m30s"), 90)
+        XCTAssertEqual(rest("1 min 30 sec"), 90)
+        XCTAssertEqual(rest("2m 30"), 150)
+        XCTAssertEqual(rest("1,5 min"), 90)
+        XCTAssertEqual(rest("2 minutes"), 120)
+        XCTAssertEqual(rest("90\""), 90)
+        XCTAssertEqual(rest("1:30:00"), 90, "a time of day the spreadsheet made out of 1:30")
+        XCTAssertEqual(rest("Rest 90"), 90)
+        XCTAssertNil(rest("as needed"))
+        // A bare range is still a guess when it is small, and is reported like a bare "3".
+        XCTAssertEqual(LiftProgramSheetImporter.restSeconds("2-3")?.seconds, 120)
+        XCTAssertEqual(LiftProgramSheetImporter.restSeconds("2-3")?.readAsMinutes, true)
+        XCTAssertEqual(LiftProgramSheetImporter.restSeconds("60-90")?.seconds, 60)
+        XCTAssertEqual(LiftProgramSheetImporter.restSeconds("60-90")?.readAsMinutes, false)
+    }
+
+    func testRestRangeInASheetNeedsNoWarning() throws {
+        let r = try parse("Exercise,Rest\nSquat,2-3 min\nRow,1m30s\nCurl,2-3\n")
+        XCTAssertEqual(r.programs[0].lines.map(\.restSec), [120, 90, 120])
+        XCTAssertEqual(r.warnings.count, 1, "only the unit-less '2-3' is a guess: \(r.warnings)")
+    }
+
     func testRpeRangeIsItsCeilingAndRirFillsIn() throws {
         let r = try parse("Exercise,RPE,RIR\nSquat,7-8,\nBench,,2\nRow,,1-2\nCurl,9,3\n")
         XCTAssertEqual(r.programs[0].lines.map(\.targetMaxRpe), [8, 8, 9, 9],

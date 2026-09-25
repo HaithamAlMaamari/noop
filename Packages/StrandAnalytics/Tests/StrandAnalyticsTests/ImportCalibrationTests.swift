@@ -57,6 +57,34 @@ final class ImportCalibrationTests: XCTestCase {
         XCTAssertNil(ImportCalibration.hrvRatio(imported: [:], device: series(0..<10) { _ in 60 }))
     }
 
+    /// The value stored for `day` (nil for an empty slot or a missing day; the key lists tell those apart).
+    private func slot(_ history: [String: Double?], _ day: String) -> Double? { history[day] ?? nil }
+
+    func testCalibratedHistoryScalesTheImportAndLetsNoopWin() {
+        let imported: [String: Double?] = ["2026-09-01": 50, "2026-09-02": nil, "2026-09-03": 60]
+        let device: [String: Double?] = ["2026-09-03": 100, "2026-09-04": 95, "2026-09-05": nil]
+        let out = ImportCalibration.calibratedHistory(imported: imported, device: device,
+                                                      calibrate: ImportCalibration.scaling(1.8))
+        XCTAssertEqual(out.keys.sorted(), ["2026-09-01", "2026-09-02", "2026-09-03", "2026-09-04", "2026-09-05"])
+        XCTAssertEqual(slot(out, "2026-09-01"), 90, "imported value on NOOP's scale")
+        XCTAssertNil(slot(out, "2026-09-02"), "an imported night without a value stays a gap")
+        XCTAssertEqual(slot(out, "2026-09-03"), 100, "NOOP's own value takes its day")
+        XCTAssertEqual(slot(out, "2026-09-04"), 95)
+        XCTAssertNil(slot(out, "2026-09-05"))
+    }
+
+    func testCalibratedHistoryWithoutAScaleLeavesTheImportOut() {
+        let imported: [String: Double?] = ["2026-09-01": 52, "2026-09-02": 54]
+        let device: [String: Double?] = ["2026-09-03": 58]
+        let out = ImportCalibration.calibratedHistory(imported: imported, device: device, calibrate: nil)
+        XCTAssertEqual(out.keys.sorted(), ["2026-09-03"])
+        let shifted = ImportCalibration.calibratedHistory(imported: imported, device: device,
+                                                          calibrate: ImportCalibration.shifting(6))
+        XCTAssertEqual(slot(shifted, "2026-09-01"), 58)
+        XCTAssertNil(ImportCalibration.scaling(nil))
+        XCTAssertNil(ImportCalibration.shifting(nil))
+    }
+
     func testMedian() {
         XCTAssertEqual(ImportCalibration.median([3, 1, 2]), 2)
         XCTAssertEqual(ImportCalibration.median([4, 1, 2, 3]), 2.5)

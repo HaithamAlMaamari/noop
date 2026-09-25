@@ -399,26 +399,135 @@ public enum LiftProgramSheetImporter {
         return (setsCount, reps)
     }
 
-    /// A rest in seconds: "90", "90s", "90 sec" → 90; "1:30" or "1'30" → 90; "2 min", "2m", "1.5 min" →
-    /// seconds. A bare number of 10 or less is almost certainly minutes ("Rest: 3"), so it is read as
-    /// minutes and reported (`readAsMinutes`) rather than stored as a 3-second rest.
+    /// A rest in seconds, as people write it: "90", "90s", "90 sec" → 90; "1:30", "1'30", "1m30s",
+    /// "1 min 30 sec" → 90; "2 min", "2m", "1.5 min", "1,5 min" → minutes; a range ("2-3 min", "60-90s",
+    /// "2 to 3 min") → its lower bound, the shortest rest the plan allows. A bound written without a unit
+    /// takes the other bound's ("2-3 min" is 2 minutes). A number with no unit anywhere and no more than
+    /// 10 is almost certainly minutes ("Rest: 3"), so it is read as minutes and reported (`readAsMinutes`)
+    /// rather than stored as a 3-second rest.
     static func restSeconds(_ raw: String) -> (seconds: Int, readAsMinutes: Bool)? {
         let s = raw.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
         guard !s.isEmpty else { return nil }
-        if let colon = s.firstIndex(where: { $0 == ":" || $0 == "'" || $0 == "’" }) {
+        // "1:30", "1'30": minutes and seconds around the mark ("2'" alone is two minutes). A spreadsheet
+        // that turned "1:30" into a time of day ("1:30:00") reads the same way.
+        if let colon = s.firstIndex(where: { $0 == ":" || $0 == "'" || $0 == "’" || $0 == "′" }) {
             let mins = integerTokens(String(s[..<colon]))
             let secs = integerTokens(String(s[s.index(after: colon)...]))
             if mins.count == 1, let m = mins.first {
                 return (m * 60 + (secs.first ?? 0), false)
             }
         }
-        guard let n = doubleFrom(s), n >= 0 else { return nil }
-        let saysMinutes = s.contains("min") || s.hasSuffix("m") || s.contains(" m ")
-        let saysSeconds = s.contains("sec") || s.hasSuffix("s") || s.contains("\"")
-        if saysMinutes && !saysSeconds { return (Int((n * 60).rounded()), false) }
-        if saysSeconds { return (Int(n.rounded()), false) }
-        if n > 0 && n <= 10 { return (Int((n * 60).rounded()), true) }
-        return (Int(n.rounded()), false)
+        let parts = restParts(s)
+        guard let first = parts.first else { return nil }
+        // Minutes then seconds with no range mark between them: "1m30s", "1 min 30 sec", "2m 30".
+        if parts.count >= 2, first.unit == .minutes, !parts[1].afterRange,
+           parts[1].unit == nil || parts[1].unit == .seconds {
+            return (Int((first.value * 60 + parts[1].value).rounded()), false)
+        }
+        var low = first
+        if parts.count >= 2, parts[1].afterRange {
+            let high = parts[1]
+            let lowUnit = first.unit ?? high.unit
+            let highUnit = high.unit ?? first.unit
+            if let lu = lowUnit, let hu = highUnit {
+                let a = secondsOf(first.value, lu), b = secondsOf(high.value, hu)
+                return (Int(min(a, b).rounded()), false)
+            }
+            low = RestPart(value: min(first.value, high.value), unit: nil, afterRange: false)
+        }
+        if let unit = low.unit { return (Int(secondsOf(low.value, unit).rounded()), false) }
+        if low.value > 0 && low.value <= 10 { return (Int((low.value * 60).rounded()), true) }
+        return (Int(low.value.rounded()), false)
+    }
+
+    enum RestUnit { case hours, minutes, seconds }
+
+    /// One number in a rest cell, the unit written right after it (if any), and whether a range mark
+    /// ("-", "–", "~", "/", "to", "or") came between it and the number before.
+    struct RestPart {
+        var value: Double
+        var unit: RestUnit?
+        var afterRange: Bool
+    }
+
+    static func secondsOf(_ value: Double, _ unit: RestUnit) -> Double {
+        switch unit {
+        case .hours: return value * 3_600
+        case .minutes: return value * 60
+        case .seconds: return value
+        }
+    }
+
+    /// The numbers of a rest cell in order, each with its unit: "1m30s" → [1 min, 30 s]; "2-3 min" →
+    /// [2, 3 min (after a range mark)]. A decimal point or comma counts only between digits.
+    static func restParts(_ s: String) -> [RestPart] {
+        let chars = Array(s)
+        var parts: [RestPart] = []
+        var pendingRange = false
+        var i = 0
+        func isDigit(_ c: Character) -> Bool { c.isASCII && c.isNumber }
+        func word(from start: Int) -> (text: String, end: Int) {
+            var w = start
+            var text = ""
+            while w < chars.count, chars[w].isLetter { text.append(chars[w]); w += 1 }
+            return (text, w)
+        }
+        while i < chars.count {
+            let c = chars[i]
+            if isDigit(c) {
+                var j = i
+                var text = ""
+                var seenPoint = false
+                while j < chars.count {
+                    let d = chars[j]
+                    if isDigit(d) { text.append(d); j += 1; continue }
+                    if d == "." || d == ",", !seenPoint, j + 1 < chars.count, isDigit(chars[j + 1]) {
+                        text.append("."); seenPoint = true; j += 1; continue
+                    }
+                    break
+                }
+                var k = j
+                while k < chars.count, chars[k] == " " { k += 1 }
+                var unit: RestUnit? = nil
+                var next = j
+                if k < chars.count {
+                    let u = chars[k]
+                    if u == "\"" || u == "″" || u == "”" {
+                        unit = .seconds; next = k + 1
+                    } else if u == "'" || u == "′" || u == "’" {
+                        unit = .minutes; next = k + 1
+                    } else if u.isLetter {
+                        let w = word(from: k)
+                        if let named = restUnit(w.text) { unit = named; next = w.end }
+                    }
+                }
+                if let v = Double(text) {
+                    parts.append(RestPart(value: v, unit: unit, afterRange: pendingRange && !parts.isEmpty))
+                }
+                pendingRange = false
+                i = next
+                continue
+            }
+            if c == "-" || c == "–" || c == "—" || c == "~" || c == "/" {
+                pendingRange = true
+            } else if c.isLetter {
+                let w = word(from: i)
+                if w.text == "to" || w.text == "or" { pendingRange = true }
+                i = w.end
+                continue
+            }
+            i += 1
+        }
+        return parts
+    }
+
+    /// "s", "sec", "secs", "seconds" → seconds; "m", "mn", "min", "mins", "minutes" → minutes; "h", "hr",
+    /// "hours" → hours. Anything else is not a unit.
+    static func restUnit(_ word: String) -> RestUnit? {
+        if word == "s" || word.hasPrefix("sec") { return .seconds }
+        if word == "m" || word == "mn" || word.hasPrefix("min") { return .minutes }
+        if word == "h" || word == "hr" || word == "hrs" || word.hasPrefix("hour") { return .hours }
+        return nil
     }
 
     /// The ceiling of an RPE cell: "8" → 8, "8,5" → 8.5, "7-8" → 8.

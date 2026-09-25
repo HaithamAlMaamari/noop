@@ -611,7 +611,15 @@ final class LiftSessionController: ObservableObject {
             guard let top = heaviest[row.id] else { return row }
             var edited = row
             if let weight = top.weightKg { edited.targetWeightKg = weight }
-            if let reps = top.reps {
+            // Personal build: a rep RANGE is the plan double progression works inside, so the reps a session
+            // happened to reach move within it and never overwrite it ("8–10" logged at 11 used to become a
+            // plain "11", after which the progression hint read the next session against the wrong target).
+            // The weight still follows the heaviest set. A single rep count keeps upstream's behaviour.
+            let hasRange: Bool = {
+                guard let low = edited.targetRepsLow, let high = edited.targetRepsHigh else { return false }
+                return high > low
+            }()
+            if let reps = top.reps, !hasRange {
                 edited.targetRepsLow = reps
                 if let high = edited.targetRepsHigh, high < reps { edited.targetRepsHigh = nil }
             }

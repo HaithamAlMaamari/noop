@@ -1917,19 +1917,25 @@ final class IntelligenceEngine: ObservableObject {
                             + "rhrOffset=\(rhrShift.map { String(format: "%+.1f", $0) } ?? "none") "
                             + "respOffset=\(respShift.map { String(format: "%+.2f", $0) } ?? "none")", .recovery)
         }
-        var histHrvByDay: [String: Double?] = [:]
-        var histRhrByDay: [String: Double?] = [:]
-        var histRespByDay: [String: Double?] = [:]
+        var histHrvRaw: [String: Double?] = [:]
+        var histRhrRaw: [String: Double?] = [:]
+        var histRespRaw: [String: Double?] = [:]
         for d in hist {
-            if let r = hrvScale { histHrvByDay[d.day] = d.avgHrv.map { $0 * r } }
-            if let o = rhrShift { histRhrByDay[d.day] = d.restingHr.map { Double($0) + o } }
-            if let o = respShift { histRespByDay[d.day] = d.respRateBpm.map { $0 + o } }
+            histHrvRaw[d.day] = d.avgHrv
+            histRhrRaw[d.day] = d.restingHr.map(Double.init)
+            histRespRaw[d.day] = d.respRateBpm
         }
-        // NOOP's own nightly value takes its day (it is on the baseline's own scale); a night without one
-        // only marks a day nothing else has.
-        Self.overlayNightly(&histHrvByDay, nightlyHrvByDay)
-        Self.overlayNightly(&histRhrByDay, nightlyRhrByDay)
-        Self.overlayNightly(&histRespByDay, nightlyRespByDay)
+        // The calibrated import, with NOOP's own nightly value taking its day (it is on the baseline's own
+        // scale); a night without one only marks a day nothing else has. Built by the one funnel the
+        // "What shaped it" sheet also folds through (`ChargeBreakdownWiring`), and the scales are recorded
+        // for it, so the sheet explains the baseline this headline was scored against.
+        let histHrvByDay = ImportCalibration.calibratedHistory(
+            imported: histHrvRaw, device: nightlyHrvByDay, calibrate: ImportCalibration.scaling(hrvScale))
+        let histRhrByDay = ImportCalibration.calibratedHistory(
+            imported: histRhrRaw, device: nightlyRhrByDay, calibrate: ImportCalibration.shifting(rhrShift))
+        let histRespByDay = ImportCalibration.calibratedHistory(
+            imported: histRespRaw, device: nightlyRespByDay, calibrate: ImportCalibration.shifting(respShift))
+        ImportCalibrationRecord(hrvRatio: hrvScale, restingHROffset: rhrShift, respOffset: respShift).save()
         // Which SOURCE measured each night's respiration — the input `Baselines.deviceEraEpoch` (#459)
         // needs, and respiration is now a metric that requires it: a WHOOP export reports its OWN measured
         // rate (~16.1 for this history) while an Oura ring reports the rate its firmware measured (~14.6),
@@ -2012,34 +2018,6 @@ final class IntelligenceEngine: ObservableObject {
             restingHR: Baselines.foldHistory(rhrSeq, dayKeys: rhrDayKeys, cfg: rhrCfg, baselineEpoch: recoveryEpoch),
             resp: respFold.usable ? respFold : nil,
             skinTemp: skinFold.usable ? skinFold : nil)
-
-        // Personal build: score each night against the baseline AS IT STOOD that night — every night up to
-        // and including it — instead of the one folded over the whole window. With a single final baseline,
-        // a week of low HRV rewrote the Charge of a normal night twelve days earlier, so before/after
-        // comparisons of a training block moved after the fact. The newest night folds exactly the history
-        // `baselines2` does, so today's Charge is unchanged by this.
-        let respFoldEpoch = max(recoveryEpoch, respEraEpoch)
-        let lastBaselineDay = [hrvDayKeys.last, rhrDayKeys.last, respDayKeys.last, skinDayKeys.last]
-            .compactMap { $0 }.max() ?? ""
-        func baselinesAsOf(_ day: String) -> AnalyticsEngine.ProfileBaselines {
-            // Nothing later to leave out: identical to the full fold, so reuse it.
-            if day >= lastBaselineDay { return baselines2 }
-            func upTo(_ keys: [String], _ values: [Double?]) -> ([String], [Double?]) {
-                let n = keys.firstIndex(where: { $0 > day }) ?? keys.count
-                return (Array(keys[..<n]), Array(values[..<n]))
-            }
-            let (hk, hv) = upTo(hrvDayKeys, hrvSeq)
-            let (rk, rv) = upTo(rhrDayKeys, rhrSeq)
-            let (pk, pv) = upTo(respDayKeys, respSeq)
-            let (sk, sv) = upTo(skinDayKeys, skinSeq)
-            let resp = Baselines.foldHistory(pv, dayKeys: pk, cfg: respCfg, baselineEpoch: respFoldEpoch)
-            let skin = Baselines.foldHistory(sv, dayKeys: sk, cfg: skinCfg, baselineEpoch: recoveryEpoch)
-            return AnalyticsEngine.ProfileBaselines(
-                hrv: Baselines.foldHistory(hv, dayKeys: hk, cfg: hrvCfg, baselineEpoch: hrvEpoch),
-                restingHR: Baselines.foldHistory(rv, dayKeys: rk, cfg: rhrCfg, baselineEpoch: recoveryEpoch),
-                resp: resp.usable ? resp : nil,
-                skinTemp: skin.usable ? skin : nil)
-        }
 
         // Real (non-detected) workouts in the scored window, used to de-duplicate detected bouts so a
         // user who BOTH has real sessions AND wears the strap doesn't see the same session twice (the
@@ -2183,28 +2161,27 @@ final class IntelligenceEngine: ObservableObject {
             var daily = sleepEditedDaily(night.daily, detected: night.cachedSleep, editsByStart: editsByStart,
                                          habitualMidsleepSec: habitualMidsleepSec)
             daily = DayCycleIntelligenceIntegration.applying(physiologicalSteps, to: daily)
-            let dayBaselines = baselinesAsOf(daily.day)
             daily = Self.recomputeRecoveryDaily(daily, nightlySkinTempC: night.nightlySkin,
-                                               baselines: dayBaselines)
+                                               baselines: baselines2)
             let recovery = daily.recovery
             let skinDev = daily.skinTempDevC
             // Charge term-breakdown trace (Group G): only when the Recovery test mode is on. Emits which
             // term moved Charge and which was nil and forced the renorm, tagged `.recovery`. The trace's
             // score is RecoveryScorer.recovery verbatim, so the `recovery` written above is unchanged.
             if recoveryTraceActive {
-                for line in recoveryTraceLines(daily, dayBaselines) { diagnosticSink?(line, .recovery) }
+                for line in recoveryTraceLines(daily, baselines2) { diagnosticSink?(line, .recovery) }
             }
             let source = DaySource.classify(day: daily.day, importedWhoopDays: importedWhoopDays,
                                             appleHealthDays: appleHealthDays)
             // SHARED CONTRACT enrichment: the ordered Charge driver list + the relative skin-temp marker,
             // built from the SAME inputs `recomputeRecovery` reads so the rows can never disagree with the
             // headline. Both are empty/nil pre-baseline (cold-start), matching the score's own null-honesty.
-            let drivers = recomputeChargeDrivers(daily, dayBaselines)
+            let drivers = recomputeChargeDrivers(daily, baselines2)
             let skinRel = RecoveryScorer.skinTempRelative(deviationC: skinDev)
             // Honest per-day Charge confidence (A3): the strap night reads `.solid`/`.building`/`.calibrating`
             // off the HRV baseline state rather than a blanket `.solid`, so a thin/provisional baseline shows
             // EST. not REL. Pure presentation upstream of the UI; the score itself is unchanged.
-            let chargeConf = ScoreConfidence.charge(recovery: recovery, hrvBaseline: dayBaselines.hrv)
+            let chargeConf = ScoreConfidence.charge(recovery: recovery, hrvBaseline: baselines2.hrv)
             out.append(Computed(day: daily.day, recovery: recovery, strain: daily.strain,
                                 sleepMin: daily.totalSleepMin, hrv: daily.avgHrv,
                                 rhr: daily.restingHr, source: source, confidence: chargeConf,
@@ -3545,21 +3522,6 @@ extension IntelligenceEngine {
     /// Merge one metric's on-device pass-1 nightly values into the imported-history map.
     /// Imported (cloud) values WIN per day; the computed estimate only fills days the import
     /// does not cover at all (key absent). Twin of the Kotlin `mergeNightlyIntoHistory`.
-    /// Personal build: lay this pass's nightly values over the (calibrated) imported history. A measured
-    /// nightly value always takes its day — NOOP's own measurement is the scale the baseline is kept on — and
-    /// a night without one only adds an empty slot where nothing else stands.
-    nonisolated static func overlayNightly(
-        _ hist: inout [String: Double?], _ nightly: [String: Double?]
-    ) {
-        for (day, v) in nightly {
-            if let v {
-                hist[day] = v
-            } else if hist[day] == nil {
-                hist.updateValue(nil, forKey: day)
-            }
-        }
-    }
-
     nonisolated static func mergeNightlyIntoHistory(
         _ hist: inout [String: Double?], _ nightly: [String: Double?]
     ) {

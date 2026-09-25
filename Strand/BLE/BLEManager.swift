@@ -1295,7 +1295,9 @@ public final class BLEManager: NSObject, ObservableObject {
     /// off until the hardware actually attests to itself.
     var whoop5Variant: Whoop5Variant {
         guard selectedModel.deviceFamily == .whoop5 else { return .unknown }
-        return Whoop5Variant.from(serial: disSerial, hardwareRevision: disHwRev)
+        // Personal build: the DIS model number too, so every consumer (ECG gates, Devices) agrees with the
+        // published label for an MG that attests itself only by its model number.
+        return Whoop5Variant.from(serial: disSerial, hardwareRevision: disHwRev, modelNumber: disModelNumber)
     }
 
     /// True only for a POSITIVELY identified WHOOP MG — the one variant with ECG electrodes. Gates the
@@ -2222,6 +2224,12 @@ public final class BLEManager: NSObject, ObservableObject {
         return true
     }
 
+    /// Personal build: whether `startGroundTruthRawCapture` can start on this link right now — any bonded
+    /// link, except that a 5/MG also needs the encrypted bond (its live-HR-only link refuses the capture).
+    var groundTruthRawCaptureReady: Bool {
+        state.bonded && (selectedModel.deviceFamily != .whoop5 || state.encryptedBond)
+    }
+
     /// Stop and flush the current manually controlled raw-data session.
     public func stopGroundTruthRawCapture() async {
         if rawCaptureInFlight && !UserDefaults.standard.bool(forKey: "enableRawCapture") {
@@ -2237,6 +2245,10 @@ public final class BLEManager: NSObject, ObservableObject {
 
     /// Stop a realtime IMU producer left armed after a crash, lost stop write, or another client.
     private func stopUnexpectedRealtimeImu(_ frame: [UInt8], isOffload: Bool, now: Date = Date()) {
+        // Personal build: the stop writes are now actually admitted by the 5/MG send gate, so this must
+        // stand aside while the user's experimental MG ECG capture may be streaming (its samples can arrive
+        // under the same packet types) — a fail-safe must never cut a capture the user started.
+        guard !ecgMayBeRunning, !ecgProbeArmed else { return }
         guard selectedModel.deviceFamily == .whoop5, !isOffload, frame.count > 8,
               frame[8] == 43 || frame[8] == 51,
               !rawCaptureInFlight, !UserDefaults.standard.bool(forKey: "enableRawCapture"),
@@ -6368,8 +6380,14 @@ extension BLEManager: @preconcurrency CBCentralManagerDelegate {
         // the refusal detectors for the session. It is restored as the live-HR link it actually is.
         let restoredHrOnly = selectedModel.deviceFamily == .whoop5
             && HelloSuppressionStore.suppressed(p.identifier.uuidString)
+        // Personal build: and only for a link that is ALREADY connected, the one didConnect will not fire for.
+        // A restored peripheral that is not connected yet reconnects through didConnect and the ordinary
+        // handshake, which proves the bond itself. Seeding `didBond` for it made that handshake's ack read as
+        // "already bonded" and be ignored, so `encryptedBond` stayed false for a genuinely bonded link — only
+        // cosmetic upstream, but the personal build gates buzz and raw capture on `encryptedBond`.
+        let seedBond = p.state == .connected && !restoredHrOnly
         state.bonded = true
-        didBond = !restoredHrOnly
+        didBond = seedBond
         // #613: didConnect never fires for an ALREADY-connected restored peripheral, so publish the strap
         // identity HERE — BEFORE encryptedBond flips true — so SourceCoordinator sees the ordinary
         // (encryptedBond == false) identity semantics `didConnect` uses (adopt-if-unknown / never clobber a
@@ -6379,7 +6397,7 @@ extension BLEManager: @preconcurrency CBCentralManagerDelegate {
         if p.state == .connected { connectedPeripheralUUID = p.identifier.uuidString }
         if restoredHrOnly {
             log("Restore: WHOOP 5/MG with CLIENT_HELLO suppressed — restoring as a live-HR link, not a full bond.")
-        } else {
+        } else if seedBond {
             state.encryptedBond = true   // a restored link was genuinely encrypted-bonded before (#69)
             noteGenuineBond(of: p)   // #52: a restored link was genuinely bonded; eligible as a re-adopt target
         }

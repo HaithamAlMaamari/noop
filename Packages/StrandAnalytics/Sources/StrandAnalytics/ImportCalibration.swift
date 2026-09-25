@@ -70,6 +70,39 @@ public enum ImportCalibration {
         return band.contains(o) ? o : nil
     }
 
+    /// Imported HRV onto NOOP's scale (`hrvRatio`), or nil when there is no trusted scale.
+    public static func scaling(_ ratio: Double?) -> ((Double) -> Double)? {
+        guard let r = ratio else { return nil }
+        return { $0 * r }
+    }
+
+    /// Imported resting HR / respiration onto NOOP's scale (an offset), or nil when there is no trusted scale.
+    public static func shifting(_ offset: Double?) -> ((Double) -> Double)? {
+        guard let o = offset else { return nil }
+        return { $0 + o }
+    }
+
+    /// The per-day values one Charge baseline folds: imported values enter only through `calibrate` (onto
+    /// NOOP's scale; nil = no trusted scale, so the import is left out), then NOOP's own values are laid
+    /// over them. A measured NOOP value takes its day; a night NOOP scored without one only adds an empty
+    /// slot where nothing else stands. The engine's re-score and the "What shaped it" sheet both build their
+    /// baseline input here, so the sheet explains the baseline the headline was scored against.
+    public static func calibratedHistory(imported: [String: Double?], device: [String: Double?],
+                                         calibrate: ((Double) -> Double)?) -> [String: Double?] {
+        var out: [String: Double?] = [:]
+        if let calibrate {
+            for (day, v) in imported { out[day] = v.map(calibrate) }
+        }
+        for (day, v) in device {
+            if let v {
+                out[day] = v
+            } else if out[day] == nil {
+                out.updateValue(nil, forKey: day)
+            }
+        }
+        return out
+    }
+
     /// Paired when enough nights overlap, else adjacent periods; nil without `minDeviceNights` NOOP nights.
     static func estimate(imported: [String: Double], device: [String: Double],
                          combine: (Double, Double) -> Double,

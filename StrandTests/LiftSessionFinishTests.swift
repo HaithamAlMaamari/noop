@@ -255,15 +255,18 @@ final class LiftSessionFinishTests: XCTestCase {
         XCTAssertEqual(LiftSessionController.applyingHeaviestSets(sets, plan: plan(), to: rows), rows)
     }
 
-    /// A bodyweight set keeps the line's weight; a leftover rep-range top below the new count is dropped;
-    /// a line with no program behind it, or deleted since, is skipped.
+    /// A bodyweight set keeps the line's weight; a rep RANGE is kept as planned (personal build: double
+    /// progression works inside it); a line with no program behind it, or deleted since, is skipped.
     func testMissingNumbersAndMissingLinesAreLeftAlone() {
         var rows = [item("bench", "Bench press", sets: 3)]
         rows[0].targetRepsHigh = 12
         let edited = LiftSessionController.applyingHeaviestSets([done(0, 1, nil, 15)], plan: plan(), to: rows)
         XCTAssertEqual(edited[0].targetWeightKg, 50, "no weight on the set, so the line's weight stays")
-        XCTAssertEqual(edited[0].targetRepsLow, 15)
-        XCTAssertNil(edited[0].targetRepsHigh, "12 would sit below the new 15")
+        XCTAssertEqual(edited[0].targetRepsLow, 10, "a range is the plan; the session's reps move inside it")
+        XCTAssertEqual(edited[0].targetRepsHigh, 12)
+        let single = LiftSessionController.applyingHeaviestSets([done(0, 1, nil, 15)], plan: plan(),
+                                                                to: [item("bench", "Bench press", sets: 3)])
+        XCTAssertEqual(single[0].targetRepsLow, 15, "a single rep count still follows the heaviest set")
 
         let unowned = [LiftPlanItem(exercise: "Curl", targetSets: 1)]
         XCTAssertEqual(LiftSessionController.applyingHeaviestSets([done(0, 1, 20, 10)], plan: unowned, to: rows),
