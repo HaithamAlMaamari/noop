@@ -32,7 +32,7 @@ final class UpdateChecker: ObservableObject {
     /// NOOP_UPDATE_REPO build setting into the Info.plist key `NOOPUpdateRepo`, so a personal fork's
     /// build checks its OWN releases instead of offering upstream's IPA over the customised one. Anything
     /// that is not a clean `owner/repo` (absent key, unexpanded `$(…)`) falls back to upstream.
-    static var updateRepo: String {
+    nonisolated static var updateRepo: String {
         let raw = ((Bundle.main.object(forInfoDictionaryKey: "NOOPUpdateRepo") as? String) ?? "")
             .trimmingCharacters(in: .whitespacesAndNewlines)
         let parts = raw.split(separator: "/", omittingEmptySubsequences: false)

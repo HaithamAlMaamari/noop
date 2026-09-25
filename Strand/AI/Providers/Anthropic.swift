@@ -3,6 +3,11 @@ import StrandAnalytics
 
 struct AnthropicClient: AIProviderClient {
 
+    // Personal build: current Claude models (Opus 5.5, Fable 5.1, Sonnet 5) think adaptively before they
+    // answer. A non-streamed reply therefore opens with a `thinking` block and carries the answer in a
+    // later `text` block, thinking tokens count against `max_tokens`, and a stream can report an error
+    // inside a 200 response. The pure parsing lives in `AnthropicWire` (StrandAnalytics, unit-tested).
+
     func send(
         key: String,
         model: String,
@@ -10,39 +15,27 @@ struct AnthropicClient: AIProviderClient {
         messages: [(role: ChatMessage.Role, content: String)],
         session: URLSession
     ) async throws -> String {
-        var wire: [[String: Any]] = []
-        for m in messages { wire.append(["role": m.role.rawValue, "content": m.content]) }
-
-        // Anthropic: system prompt is a top-level field, not a message role.
         let body: [String: Any] = [
-            "model": model,
-            // #1074: 900 truncated detailed coaching replies mid-sentence; 4096 lets a full multi-section
-            // reply complete (a cap, not a target — the system prompt keeps it short). Matches the others.
-            "max_tokens": 4096,
+            "model": AnthropicWire.migratedModel(model),
+            "max_tokens": AnthropicWire.maxTokens,
             "system": systemPrompt,
-            "messages": wire
+            "messages": AnthropicWire.messages(messages.map { (role: $0.role.rawValue, content: $0.content) })
         ]
 
-        var req = URLRequest(url: AIProvider.anthropic.endpoint)
-        req.httpMethod = "POST"
-        req.setValue(key, forHTTPHeaderField: "x-api-key")
-        req.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
-        req.setValue("application/json", forHTTPHeaderField: "content-type")
-        req.httpBody = try JSONSerialization.data(withJSONObject: body)
-
-        let json = try await performRequest(req, session: session)
-        guard let content = json["content"] as? [[String: Any]],
-              let first = content.first,
-              let text = (first["text"] as? String)?
-                  .trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty else {
+        let json = try await performRequest(try request(key: key, body: body), session: session)
+        guard let text = AnthropicWire.replyText(json) else {
             throw emptyReplyError(json)   // #1074: surface the provider's real error if the 200 body has one
+        }
+        if AnthropicWire.stopReason(json) == "max_tokens" {
+            return text + AnthropicWire.truncatedNote
         }
         return text
     }
 
-    /// K1: Stream via `stream: true`. Anthropic SSE uses typed events; we extract `content_block_delta`
-    /// with `text_delta` via `SseDeltas.anthropicDelta`. Byte-parity pin in
-    /// `SseDeltasTests.anthropicReassembleMatchesFullReply`.
+    /// K1: Stream via `stream: true`. Anthropic SSE uses typed events; text arrives as `content_block_delta`
+    /// / `text_delta` (thinking deltas are skipped by `SseDeltas.anthropicDelta`). An `error` event inside
+    /// the 200 stream is thrown instead of being read as the end of a complete reply, and a reply stopped
+    /// by the token cap says so.
     func stream(
         key: String,
         model: String,
@@ -51,29 +44,35 @@ struct AnthropicClient: AIProviderClient {
         session: URLSession,
         onDelta: (String) -> Void
     ) async throws {
-        var wire: [[String: Any]] = []
-        for m in messages { wire.append(["role": m.role.rawValue, "content": m.content]) }
-
         let body: [String: Any] = [
-            "model": model,
-            "max_tokens": 4096,
+            "model": AnthropicWire.migratedModel(model),
+            "max_tokens": AnthropicWire.maxTokens,
             "system": systemPrompt,
-            "messages": wire,
+            "messages": AnthropicWire.messages(messages.map { (role: $0.role.rawValue, content: $0.content) }),
             "stream": true
         ]
 
+        var stopReason: String?
+        try await performStreamingRequest(try request(key: key, body: body), session: session) { payload in
+            if let message = AnthropicWire.streamError(payload) {
+                throw AICoachError.emptyReply("Anthropic stopped mid-reply: \(message). Try again in a moment.")
+            }
+            if let reason = AnthropicWire.streamStopReason(payload) { stopReason = reason }
+            if let delta = SseDeltas.anthropicDelta(payload) {
+                onDelta(delta)
+            }
+        }
+        if stopReason == "max_tokens" { onDelta(AnthropicWire.truncatedNote) }
+    }
+
+    private func request(key: String, body: [String: Any]) throws -> URLRequest {
         var req = URLRequest(url: AIProvider.anthropic.endpoint)
         req.httpMethod = "POST"
         req.setValue(key, forHTTPHeaderField: "x-api-key")
         req.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
         req.setValue("application/json", forHTTPHeaderField: "content-type")
         req.httpBody = try JSONSerialization.data(withJSONObject: body)
-
-        try await performStreamingRequest(req, session: session) { payload in
-            if let delta = SseDeltas.anthropicDelta(payload) {
-                onDelta(delta)
-            }
-        }
+        return req
     }
 
     func fetchModels(key: String, session: URLSession) async throws -> [String] {

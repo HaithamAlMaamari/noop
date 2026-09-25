@@ -241,9 +241,10 @@ struct LiftProgramImportSheet: View {
                     id: UUID().uuidString, deviceId: repo.deviceId, programId: programId,
                     ord: index, exercise: line.exercise,
                     targetSets: line.targetSets,
-                    // The sheet plans ONE rep count, which is what the editor plans too; the range's
-                    // high end stays nil rather than inventing a spread nobody typed.
-                    targetRepsLow: line.targetReps, targetRepsHigh: nil, targetRpe: line.targetMaxRpe,
+                    // Personal build: a range typed in the sheet ("8-10") keeps its top end; a single
+                    // count still leaves it nil rather than inventing a spread nobody typed.
+                    targetRepsLow: line.targetReps, targetRepsHigh: line.targetRepsHigh,
+                    targetRpe: line.targetMaxRpe,
                     targetWeightKg: line.targetWeightKg,
                     restSec: line.restSec, note: line.note)
             }

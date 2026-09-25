@@ -1978,7 +1978,11 @@ final class AppModel: ObservableObject {
         // Skin-temp deviation: a stored °C delta. Build a small zero-centred state from its own recent
         // spread so a +0.6 °C reads as a meaningful z without needing a separate baseline column.
         var skin: (IllnessSignalEngine.SignalReading, Bool)? = nil
-        if let recentSkin = rm({ $0.skinTempDevC }) {
+        // Personal build: the same column also carries imported ABSOLUTE skin temperatures (~33 °C from a
+        // WHOOP export). Read as a deviation, one of those alone maxed this term out and, with any second
+        // signal, raised a false heads-up. Only true deviations (< 20 °C, `VitalBands.isAbsoluteSkinTemp`)
+        // are averaged here.
+        if let recentSkin = rm({ d in d.skinTempDevC.flatMap { (v: Double) -> Double? in VitalBands.isAbsoluteSkinTemp(v) ? nil : v } }) {
             let z = recentSkin / 0.3     // ~0.3 °C ≈ one personal spread (matches skin_temp floorSpread)
             skin = (IllnessSignalEngine.SignalReading(zIllnessward: z), true)
         }

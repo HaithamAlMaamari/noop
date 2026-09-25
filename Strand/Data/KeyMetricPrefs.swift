@@ -54,9 +54,12 @@ enum KeyMetric: String, CaseIterable, Identifiable {
     }
 
     /// The original, hard-coded grid order — the default when the user hasn't customised the layout.
+    /// Personal build: Skin Temp takes Blood Oxygen's slot. A WHOOP 5/MG never yields SpO2 offline, so on
+    /// that strap the tile could only ever show a dash or a stale imported value; skin temperature at
+    /// least updates on the firmware that reports it. Blood Oxygen stays one tap away in the editor.
     static let defaultOrder: [KeyMetric] = [
         .charge, .effort, .rest, .hrv, .restingHr,
-        .bloodOxygen, .respiratory, .steps, .weight, .calories,
+        .skinTemp, .respiratory, .steps, .weight, .calories,
     ]
 }
 

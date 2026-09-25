@@ -23,7 +23,7 @@ enum AIProvider: String, CaseIterable, Identifiable {
     var defaultModel: String {
         switch self {
         case .openAI:    return "gpt-5-mini"
-        case .anthropic: return "claude-sonnet-4-6"
+        case .anthropic: return AnthropicWire.defaultModel
         case .gemini:    return "gemini-flash-latest"   // stable alias → current Flash, no version churn (#400)
         case .custom:    return ""   // the user picks the model their server serves
         }
@@ -56,15 +56,9 @@ enum AIProvider: String, CaseIterable, Identifiable {
                 "o4-mini"
             ]
         case .anthropic:
-            return [
-                "claude-opus-4-8",
-                "claude-sonnet-4-6",
-                "claude-haiku-4-5-20251001",
-                "claude-3-7-sonnet-latest",
-                "claude-3-5-sonnet-latest",
-                "claude-3-5-haiku-latest",
-                "claude-3-opus-latest"
-            ]
+            // Personal build: current models first; the retired 3.x ids are gone (a request to one
+            // fails). Kept in `AnthropicWire` so the list, the default and the retired set live together.
+            return AnthropicWire.modelOptions
         case .gemini:
             // Stable `-latest` ALIASES, not pinned versions (#400): they always resolve to the current
             // stable model in each tier, so Gemini's rapid releases never need a code bump. `refreshModels()`
@@ -373,7 +367,7 @@ func emptyReplyError(_ json: [String: Any]) -> AICoachError {
 func performStreamingRequest(
     _ req: URLRequest,
     session: URLSession,
-    onLine: (String) -> Void
+    onLine: (String) throws -> Void
 ) async throws {
     let bytes: (URLSession.AsyncBytes, URLResponse)
     do {
@@ -391,7 +385,9 @@ func performStreamingRequest(
         // Read line-by-line from the SSE byte stream. `URLSession.AsyncBytes` splits on \n.
         for try await line in bytes.0.lines {
             if let payload = SseDeltas.dataPayload(fromLine: line) {
-                onLine(payload)
+                // Personal build: the per-line handler may throw (Anthropic reports errors inside a 200
+                // stream), which ends the read and surfaces the provider's message.
+                try onLine(payload)
             }
         }
     case let status where AICoachError.isKeyRejection(status):

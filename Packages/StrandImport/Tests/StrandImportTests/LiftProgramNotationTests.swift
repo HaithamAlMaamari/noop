@@ -1,0 +1,74 @@
+import XCTest
+import WhoopStore
+@testable import StrandImport
+
+/// Personal build: sets, reps, rest and effort written the way lifters actually write them.
+final class LiftProgramNotationTests: XCTestCase {
+
+    private func parse(_ csv: String) throws -> LiftProgramImportResult {
+        try LiftProgramSheetImporter.parse(data: Data(csv.utf8))
+    }
+
+    func testRepRangesKeepBothEnds() throws {
+        let r = try parse("Exercise,Sets,Reps\nBench press,4,8-10\nRow,3,12–15\nCurl,3,10 to 12\nDips,3,10+\n")
+        let lines = r.programs[0].lines
+        XCTAssertEqual(lines[0].targetReps, 8); XCTAssertEqual(lines[0].targetRepsHigh, 10)
+        XCTAssertEqual(lines[1].targetReps, 12); XCTAssertEqual(lines[1].targetRepsHigh, 15)
+        XCTAssertEqual(lines[2].targetReps, 10); XCTAssertEqual(lines[2].targetRepsHigh, 12)
+        XCTAssertEqual(lines[3].targetReps, 10); XCTAssertNil(lines[3].targetRepsHigh)
+        XCTAssertTrue(r.warnings.isEmpty, "\(r.warnings)")
+    }
+
+    func testSetsByRepsInEitherColumn() throws {
+        let r = try parse("Exercise,Sets,Reps\nSquat,5x5,\nPress,,3 x 8-10\nPulldown,4,3×12\n")
+        let l = r.programs[0].lines
+        XCTAssertEqual(l[0].targetSets, 5); XCTAssertEqual(l[0].targetReps, 5); XCTAssertNil(l[0].targetRepsHigh)
+        XCTAssertEqual(l[1].targetSets, 3); XCTAssertEqual(l[1].targetReps, 8); XCTAssertEqual(l[1].targetRepsHigh, 10)
+        // An explicit Sets cell wins over the sets written in the Reps cell.
+        XCTAssertEqual(l[2].targetSets, 4); XCTAssertEqual(l[2].targetReps, 12)
+    }
+
+    func testRestFormats() throws {
+        let r = try parse("Exercise,Rest sec\nA,90\nB,1:30\nC,2 min\nD,90s\nE,1.5 min\nF,3\nG,2'30\n")
+        XCTAssertEqual(r.programs[0].lines.map(\.restSec), [90, 90, 120, 90, 90, 180, 150])
+        XCTAssertEqual(r.warnings.count, 1, "only the bare '3' is a guess worth reporting: \(r.warnings)")
+        XCTAssertTrue(r.warnings[0].hasPrefix("Row 7:"))
+    }
+
+    func testRpeRangeIsItsCeilingAndRirFillsIn() throws {
+        let r = try parse("Exercise,RPE,RIR\nSquat,7-8,\nBench,,2\nRow,,1-2\nCurl,9,3\n")
+        XCTAssertEqual(r.programs[0].lines.map(\.targetMaxRpe), [8, 8, 9, 9],
+                       "an explicit RPE wins over RIR; RIR 1-2 caps at the harder end")
+    }
+
+    func testImplausibleValuesAreDroppedWithAWarning() throws {
+        let r = try parse("Exercise,Sets,Reps,Weight kg,Rest sec\nSquat,40,46244,5000,7200\n")
+        let l = r.programs[0].lines[0]
+        XCTAssertNil(l.targetSets)
+        XCTAssertNil(l.targetReps)
+        XCTAssertNil(l.targetWeightKg)
+        XCTAssertNil(l.restSec)
+        XCTAssertEqual(r.warnings.count, 4, "\(r.warnings)")
+        XCTAssertTrue(r.warnings.contains { $0.contains("date") }, "a date serial in Reps is named as such")
+    }
+
+    func testPlainTemplateValuesAreUnchanged() throws {
+        let r = try parse("Exercise,Sets,Reps,Weight kg,Rest sec\nLeg press,3,10,\"40,5 kg\",60\n")
+        let l = r.programs[0].lines[0]
+        XCTAssertEqual(l.targetSets, 3)
+        XCTAssertEqual(l.targetReps, 10)
+        XCTAssertNil(l.targetRepsHigh)
+        XCTAssertEqual(l.targetWeightKg, 40.5)
+        XCTAssertEqual(l.restSec, 60)
+        XCTAssertTrue(r.warnings.isEmpty)
+    }
+
+    func testPureHelpers() {
+        XCTAssertEqual(LiftProgramSheetImporter.integerTokens("3 x 8-10"), [3, 8, 10])
+        XCTAssertNil(LiftProgramSheetImporter.setsByReps("10 max"))
+        XCTAssertNil(LiftProgramSheetImporter.repRange("AMRAP"))
+        XCTAssertEqual(LiftProgramSheetImporter.restSeconds("45 sec")?.seconds, 45)
+        XCTAssertEqual(LiftProgramSheetImporter.rpeCeiling("8,5"), 8.5)
+        XCTAssertEqual(LiftProgramSheetImporter.rirFloor("2-3"), 2)
+    }
+}

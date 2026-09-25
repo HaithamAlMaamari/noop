@@ -364,7 +364,7 @@ enum CoachBriefScheduler {
     #if os(iOS)
     /// iOS BGTask identifier, derived from the running bundle id so it tracks `BUNDLE_ID_PREFIX` and
     /// matches the iOS target's `BGTaskSchedulerPermittedIdentifiers` (Info.plist / project.yml).
-    static let bgTaskIdentifier = (Bundle.main.bundleIdentifier ?? "com.noopapp.noop") + ".coachbrief"
+    static let bgTaskIdentifier = BGTaskIdentifiers.identifier(suffix: "coachbrief")
 
     /// Register the BGTask handler. MUST be called from the app's launch (before launch finishes) — call
     /// this from `StrandiOSApp.init()` with `{ [weak coach] in await coach?.generateBrief() }`. Safe to

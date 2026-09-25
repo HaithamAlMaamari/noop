@@ -114,7 +114,12 @@ struct RootTabView: View {
                 guard selectedTab != 0 else { return }
                 let dx = v.translation.width, dy = v.translation.height
                 guard abs(dx) > 60, abs(dx) > abs(dy) * 1.6 else { return }
-                let next = min(4, max(0, selectedTab + (dx < 0 ? 1 : -1)))
+                // Personal build: step through the tabs that EXIST. With Coach switched off, tag 3 has
+                // no tab, and a swipe from Sleep (or back from More) landed on it as a blank screen.
+                let visible = coachEnabled ? [0, 1, 2, 3, 4] : [0, 1, 2, 4]
+                guard let here = visible.firstIndex(of: selectedTab) else { return }
+                let target = min(visible.count - 1, max(0, here + (dx < 0 ? 1 : -1)))
+                let next = visible[target]
                 if next != selectedTab {
                     withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.24)) { selectedTab = next }
                 }

@@ -98,8 +98,28 @@ public struct WidgetSnapshot: Codable, Equatable {
     /// key is somehow absent (each process reads its OWN bundle, so the app and the widget extension
     /// each carry the key in their generated Info.plist).
     public static let suiteName: String = {
-        resolveSuiteName(infoDictionary: Bundle.main.infoDictionary ?? [:])
+        resolveSuiteName(infoDictionary: Bundle.main.infoDictionary ?? [:],
+                         profileGroups: provisionedAppGroups())
     }()
+
+    /// Personal build: the App Groups this process's signature actually grants, read from the bundle's
+    /// `embedded.mobileprovision` (every sideloaded / development build carries one; each process reads
+    /// its OWN bundle, so the app and the widget extension each see their own profile). Empty when there
+    /// is no profile or it can't be parsed.
+    static func provisionedAppGroups() -> [String] {
+        guard let url = Bundle.main.url(forResource: "embedded", withExtension: "mobileprovision"),
+              let data = try? Data(contentsOf: url),
+              let start = data.range(of: Data("<?xml".utf8)),
+              let end = data.range(of: Data("</plist>".utf8)),
+              start.lowerBound < end.upperBound,
+              let plist = try? PropertyListSerialization.propertyList(
+                  from: data.subdata(in: start.lowerBound..<end.upperBound), format: nil) as? [String: Any],
+              let entitlements = plist["Entitlements"] as? [String: Any],
+              let groups = entitlements["com.apple.security.application-groups"] as? [String] else {
+            return []
+        }
+        return groups
+    }
     public static let storageKey = "noop.widget.snapshot"
 
     /// Resolve the App Group the current signature actually grants.
@@ -111,7 +131,7 @@ public struct WidgetSnapshot: Codable, Equatable {
     /// in a sideloaded build, even though the host app and widget extension were both signed correctly.
     ///
     /// Normal Xcode builds don't carry `ALTAppGroups`, so they keep using `AppGroupIdentifier`.
-    static func resolveSuiteName(infoDictionary: [String: Any]) -> String {
+    static func resolveSuiteName(infoDictionary: [String: Any], profileGroups: [String] = []) -> String {
         let configured = (infoDictionary["AppGroupIdentifier"] as? String)?
             .trimmingCharacters(in: .whitespacesAndNewlines)
         let altGroups = (infoDictionary["ALTAppGroups"] as? [String])?
@@ -126,6 +146,20 @@ public struct WidgetSnapshot: Codable, Equatable {
         }
         if altGroups.count == 1, let provisioned = altGroups.first {
             return provisioned
+        }
+        // Personal build: sideloaders other than AltStore/SideStore (Sideloadly) may rename the group
+        // without publishing `ALTAppGroups`. The embedded profile says what was actually granted: prefer the
+        // configured group when it is granted as-is, then a granted group derived from it, then the only one.
+        let granted = profileGroups
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { $0.hasPrefix("group.") && !$0.contains("*") }
+        if let configured, !configured.isEmpty, !granted.isEmpty {
+            if granted.contains(configured) { return configured }
+            if let derived = granted.first(where: { $0.hasPrefix(configured + ".") }) { return derived }
+            if let noop = granted.first(where: { $0.lowercased().contains("noop") }) { return noop }
+        }
+        if granted.count == 1, let only = granted.first {
+            return only
         }
         if let configured, !configured.isEmpty {
             return configured

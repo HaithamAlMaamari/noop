@@ -117,6 +117,17 @@ struct IOSDiagnostics {
                 lines.append("Sideload expiry: \(days) day\(days == 1 ? "" : "s") remaining")
             }
         }
+        // Personal build: what the sideloader actually granted, so a silent widget or background-task
+        // failure can be read off this screen instead of guessed at.
+        lines.append("Bundle id: \(Bundle.main.bundleIdentifier ?? "unknown")")
+        let group = WidgetSnapshot.suiteName
+        let groupReachable = FileManager.default
+            .containerURL(forSecurityApplicationGroupIdentifier: group) != nil
+        lines.append("App Group: \(group) - \(groupReachable ? "shared container OK" : "NOT provisioned (widgets and Live Activity can't read data)")")
+        lines.append("Background tasks: \(BGTaskIdentifiers.identifier(suffix: "rescore")), \(BGTaskIdentifiers.identifier(suffix: "healthwriteback"))")
+        if UpdateWatch.personalBuildNumber > 0 {
+            lines.append("Personal build: \(UpdateWatch.installedVersion), updates from \(UpdateChecker.updateRepo)")
+        }
         return lines
         #elseif os(macOS)
         var lines: [String] = []

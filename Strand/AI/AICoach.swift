@@ -379,7 +379,12 @@ final class AICoachEngine: ObservableObject {
             .flatMap(AIProvider.init(rawValue:)) ?? .openAI
         self.provider = storedProvider
 
-        let storedModel = UserDefaults.standard.string(forKey: Self.modelKey)
+        var storedModel = UserDefaults.standard.string(forKey: Self.modelKey)
+        // Personal build: a persisted Anthropic id that Anthropic has since retired would fail every
+        // request, so it is moved to the current default (and the picker shows what is actually sent).
+        if storedProvider == .anthropic, let id = storedModel, !id.isEmpty {
+            storedModel = AnthropicWire.migratedModel(id)
+        }
         // A persisted custom id is honoured even if it's not in the built-in list.
         if let storedModel, !storedModel.isEmpty {
             self.model = storedModel
@@ -1212,7 +1217,9 @@ final class AICoachEngine: ObservableObject {
         // Additional vitals when present (#124, the coach used to see only recovery/strain/sleep/HRV/RHR).
         lines.append("  SpO2: \(avgInt(last30.compactMap { $0.spo2Pct }))%"
                      + ", respiration: \(avgOne(last30.compactMap { $0.respRateBpm }))/min"
-                     + ", skin-temp deviation: \(avgOne(last30.compactMap { $0.skinTempDevC }))°C"
+                     // Personal build: imported absolute temperatures (~33 °C) share this column; only
+                     // true deviations are averaged, so the coach is not told "deviation: 33.4 °C".
+                     + ", skin-temp deviation: \(avgOne(last30.compactMap { d in d.skinTempDevC.flatMap { (v: Double) -> Double? in VitalBands.isAbsoluteSkinTemp(v) ? nil : v } }))°C"
                      + ", steps: \(avgInt(last30.compactMap { $0.steps.map(Double.init) }))/day"
                      + ", active energy: \(avgInt(last30.compactMap { $0.activeKcalEst }))kcal/day")
 

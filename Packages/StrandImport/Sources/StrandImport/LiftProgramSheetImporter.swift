@@ -26,6 +26,9 @@ public struct ImportedProgramLine: Sendable, Equatable {
     public var secondaryMuscles: [LiftMuscle]
     public var targetSets: Int?
     public var targetReps: Int?
+    /// Personal build: the top of a rep range ("8-10" → targetReps 8, targetRepsHigh 10). Nil for a single
+    /// rep count. Stored as `liftProgramItem.targetRepsHigh`.
+    public var targetRepsHigh: Int?
     public var targetWeightKg: Double?
     /// The line's max RPE, 1-10: a ceiling to stay under, stored as `liftProgramItem.targetRpe`.
     public var targetMaxRpe: Double?
@@ -34,12 +37,13 @@ public struct ImportedProgramLine: Sendable, Equatable {
 
     public init(exercise: String, primaryMuscle: LiftMuscle?, secondaryMuscles: [LiftMuscle],
                 targetSets: Int?, targetReps: Int?, targetWeightKg: Double?, targetMaxRpe: Double?,
-                restSec: Int?, note: String?) {
+                restSec: Int?, note: String?, targetRepsHigh: Int? = nil) {
         self.exercise = exercise
         self.primaryMuscle = primaryMuscle
         self.secondaryMuscles = secondaryMuscles
         self.targetSets = targetSets
         self.targetReps = targetReps
+        self.targetRepsHigh = targetRepsHigh
         self.targetWeightKg = targetWeightKg
         self.targetMaxRpe = targetMaxRpe
         self.restSec = restSec
@@ -109,6 +113,13 @@ public enum LiftProgramSheetImporter {
     /// Programs created from one file.
     static let maxPrograms = 50
 
+    /// Personal build: plausibility bounds. A value outside them is a typo or a spreadsheet mangling
+    /// (a range auto-converted to a date), and is dropped with a warning rather than stored.
+    static let maxPlausibleSets = 20
+    static let maxPlausibleReps = 100
+    static let maxPlausibleRestSec = 1_800
+    static let maxPlausibleWeightKg = 1_000.0
+
     /// Warnings reported. A pathological sheet could otherwise produce thousands, which helps nobody
     /// and makes the preview unscrollable; the count is still reported honestly (see `warnings`).
     static let maxWarnings = 50
@@ -125,6 +136,10 @@ public enum LiftProgramSheetImporter {
     private static let weightKeys = ["weight_kg", "weight", "kg", "load", "load_kg"]
     private static let restKeys = ["rest_sec", "rest_seconds", "rest", "rest_s"]
     private static let noteKeys = ["note", "technique_note", "notes", "cue"]
+    private static let rpeKeys = ["target_max_rpe", "max_rpe", "rpe_max", "target_rpe", "rpe"]
+    /// Personal build: reps-in-reserve, the other common way lifters write effort. RIR r is read as a
+    /// max RPE of 10 - r when the sheet gives no RPE.
+    private static let rirKeys = ["rir", "target_rir", "reps_in_reserve", "max_rir"]
 
     /// Parse a filled-in template. Detects `.xlsx` by its ZIP magic bytes, else treats it as CSV.
     public static func parse(data: Data) throws -> LiftProgramImportResult {
@@ -201,12 +216,67 @@ public enum LiftProgramSheetImporter {
 
             // A max RPE outside the scale is refused with a warning rather than clamped: 12 is a typo,
             // and guessing whether it meant 10 or 1.2 would put a ceiling in the plan nobody chose.
-            var maxRpe = doubleValue(row, ["target_max_rpe", "max_rpe", "rpe_max", "target_rpe", "rpe"])
+            // Personal build: a range ("7-8") is read as its ceiling, and an RIR column fills in when the
+            // sheet has no RPE (RIR 2 = max RPE 8).
+            var maxRpe = value(row, rpeKeys).flatMap(rpeCeiling)
+            if maxRpe == nil, let rirRaw = value(row, rirKeys), let rir = rirFloor(rirRaw) {
+                if (0...9).contains(rir) {
+                    maxRpe = 10 - rir
+                } else if warnings.count < maxWarnings {
+                    warnings.append(rowMessage(i, "RIR \(shownNumber(rir)) is not between 0 and 9, so \"\(exercise)\" has no effort ceiling"))
+                }
+            }
             if let rpe = maxRpe, !(1...10).contains(rpe) {
                 maxRpe = nil
                 if warnings.count < maxWarnings {
-                    let shown = rpe == rpe.rounded() ? String(Int(rpe)) : String(rpe)
-                    warnings.append(rowMessage(i, "max RPE \(shown) is not between 1 and 10, so \"\(exercise)\" has none"))
+                    warnings.append(rowMessage(i, "max RPE \(shownNumber(rpe)) is not between 1 and 10, so \"\(exercise)\" has none"))
+                }
+            }
+
+            // Personal build: sets, reps and rest as people actually type them. "3x10" (in either
+            // column) is 3 sets of 10, "8-10" is a rep range, "1:30" / "2 min" / "90s" is a rest. The old
+            // digit-joining read "8-10" as 810 reps, "3x10" as 310 sets and "1:30" as 130 seconds.
+            var sets = value(row, setsKeys).flatMap { setsByReps($0)?.sets } ?? intValue(row, setsKeys)
+            var reps: (low: Int, high: Int?)? = nil
+            if let rawReps = value(row, repsKeys) {
+                reps = setsByReps(rawReps)?.reps ?? repRange(rawReps)
+                if let sxr = setsByReps(rawReps), sets == nil { sets = sxr.sets }
+            } else if let rawSets = value(row, setsKeys) {
+                reps = setsByReps(rawSets)?.reps
+            }
+            if let n = sets, !(1...maxPlausibleSets).contains(n) {
+                sets = nil
+                if warnings.count < maxWarnings {
+                    warnings.append(rowMessage(i, "\(n) sets is not a plausible target, so \"\(exercise)\" has no set count"))
+                }
+            }
+            if let r = reps, r.low < 1 || (r.high ?? r.low) > maxPlausibleReps {
+                reps = nil
+                if warnings.count < maxWarnings {
+                    let big = (r.high ?? r.low) > 1000
+                    warnings.append(rowMessage(i, big
+                        ? "the reps cell looks like a date the spreadsheet made out of a range, so \"\(exercise)\" has no rep target (format the Reps column as Text)"
+                        : "that rep target is not plausible, so \"\(exercise)\" has none"))
+                }
+            }
+            var rest: Int? = nil
+            if let rawRest = value(row, restKeys), let parsed = restSeconds(rawRest) {
+                if parsed.seconds > maxPlausibleRestSec {
+                    if warnings.count < maxWarnings {
+                        warnings.append(rowMessage(i, "a rest of \(parsed.seconds) seconds is not plausible, so \"\(exercise)\" has none"))
+                    }
+                } else {
+                    rest = parsed.seconds
+                    if parsed.readAsMinutes, warnings.count < maxWarnings {
+                        warnings.append(rowMessage(i, "rest \"\(rawRest.trimmed)\" was read as minutes (\(parsed.seconds) s) for \"\(exercise)\""))
+                    }
+                }
+            }
+            var weight = doubleValue(row, weightKeys)
+            if let w = weight, !(-maxPlausibleWeightKg...maxPlausibleWeightKg).contains(w) {
+                weight = nil
+                if warnings.count < maxWarnings {
+                    warnings.append(rowMessage(i, "\(shownNumber(w)) kg is not plausible, so \"\(exercise)\" has no weight target"))
                 }
             }
 
@@ -217,13 +287,14 @@ public enum LiftProgramSheetImporter {
                 exercise: exercise,
                 primaryMuscle: primary,
                 secondaryMuscles: secondary,
-                targetSets: intValue(row, setsKeys),
-                targetReps: intValue(row, repsKeys),
-                targetWeightKg: doubleValue(row, weightKeys),
+                targetSets: sets,
+                targetReps: reps?.low,
+                targetWeightKg: weight,
                 targetMaxRpe: maxRpe,
-                restSec: intValue(row, restKeys),
+                restSec: rest,
                 note: value(row, noteKeys)?.trimmed.nilIfEmpty
-                    .map { String($0.prefix(WhoopStore.maxExerciseNoteLength)) })
+                    .map { String($0.prefix(WhoopStore.maxExerciseNoteLength)) },
+                targetRepsHigh: reps?.high)
 
             if let idx = indexByName[programName.lowercased()] {
                 guard programs[idx].lines.count < maxLinesPerProgram else { truncated = true; continue }
@@ -284,6 +355,90 @@ public enum LiftProgramSheetImporter {
     private static func doubleValue(_ row: [String: String], _ keys: [String]) -> Double? {
         guard let raw = value(row, keys) else { return nil }
         return doubleFrom(raw)
+    }
+
+    // MARK: - Personal build: sets, reps, rest and effort as people write them
+
+    /// The whole numbers in a cell, in order ("8-10" → [8, 10], "3 x 12" → [3, 12]).
+    static func integerTokens(_ raw: String) -> [Int] {
+        var out: [Int] = []
+        var current = ""
+        for ch in raw {
+            if ch.isASCII && ch.isNumber {
+                current.append(ch)
+            } else if !current.isEmpty {
+                if let n = Int(current) { out.append(n) }
+                current = ""
+            }
+        }
+        if !current.isEmpty, let n = Int(current) { out.append(n) }
+        return out
+    }
+
+    /// A rep target: "10" → (10, nil); "8-10", "8–10", "8 to 10", "8~10" → (8, 10); "10+" → (10, nil).
+    /// A reversed range is put in order; an equal range is a single count. Nil without a number.
+    static func repRange(_ raw: String) -> (low: Int, high: Int?)? {
+        let ints = integerTokens(raw)
+        guard let first = ints.first else { return nil }
+        guard ints.count >= 2 else { return (first, nil) }
+        let a = ints[0], b = ints[1]
+        if a == b { return (a, nil) }
+        return (min(a, b), max(a, b))
+    }
+
+    /// "3x10", "3 x 10", "3×10", "3X8-10", "3*10" → 3 sets of 10 (or 8-10). Nil when the cell is not
+    /// written that way.
+    static func setsByReps(_ raw: String) -> (sets: Int, reps: (low: Int, high: Int?))? {
+        let lower = raw.lowercased()
+        guard let sep = lower.firstIndex(where: { $0 == "x" || $0 == "×" || $0 == "*" }) else { return nil }
+        let left = String(lower[..<sep])
+        let right = String(lower[lower.index(after: sep)...])
+        guard let setsCount = integerTokens(left).last,
+              integerTokens(left).count == 1,
+              let reps = repRange(right) else { return nil }
+        return (setsCount, reps)
+    }
+
+    /// A rest in seconds: "90", "90s", "90 sec" → 90; "1:30" or "1'30" → 90; "2 min", "2m", "1.5 min" →
+    /// seconds. A bare number of 10 or less is almost certainly minutes ("Rest: 3"), so it is read as
+    /// minutes and reported (`readAsMinutes`) rather than stored as a 3-second rest.
+    static func restSeconds(_ raw: String) -> (seconds: Int, readAsMinutes: Bool)? {
+        let s = raw.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !s.isEmpty else { return nil }
+        if let colon = s.firstIndex(where: { $0 == ":" || $0 == "'" || $0 == "’" }) {
+            let mins = integerTokens(String(s[..<colon]))
+            let secs = integerTokens(String(s[s.index(after: colon)...]))
+            if mins.count == 1, let m = mins.first {
+                return (m * 60 + (secs.first ?? 0), false)
+            }
+        }
+        guard let n = doubleFrom(s), n >= 0 else { return nil }
+        let saysMinutes = s.contains("min") || s.hasSuffix("m") || s.contains(" m ")
+        let saysSeconds = s.contains("sec") || s.hasSuffix("s") || s.contains("\"")
+        if saysMinutes && !saysSeconds { return (Int((n * 60).rounded()), false) }
+        if saysSeconds { return (Int(n.rounded()), false) }
+        if n > 0 && n <= 10 { return (Int((n * 60).rounded()), true) }
+        return (Int(n.rounded()), false)
+    }
+
+    /// The ceiling of an RPE cell: "8" → 8, "8,5" → 8.5, "7-8" → 8.
+    static func rpeCeiling(_ raw: String) -> Double? {
+        let parts = raw.split(whereSeparator: { $0 == "-" || $0 == "–" || $0 == "—" || $0 == "~" || $0 == "/" })
+        let values = parts.compactMap { doubleFrom(String($0)) }
+        if values.count >= 2 { return values.max() }
+        return doubleFrom(raw)
+    }
+
+    /// The lower bound of an RIR cell (the harder end, i.e. the higher RPE): "2" → 2, "1-2" → 1.
+    static func rirFloor(_ raw: String) -> Double? {
+        let parts = raw.split(whereSeparator: { $0 == "-" || $0 == "–" || $0 == "—" || $0 == "~" || $0 == "/" })
+        let values = parts.compactMap { doubleFrom(String($0)) }
+        if values.count >= 2 { return values.min() }
+        return doubleFrom(raw)
+    }
+
+    private static func shownNumber(_ v: Double) -> String {
+        v == v.rounded() ? String(Int(v)) : String(v)
     }
 
     /// Numbers as spreadsheets actually write them: "60", "60.5", "60,5" (comma decimal in most of
